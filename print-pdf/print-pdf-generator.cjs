@@ -101,7 +101,7 @@ async function fetchBook(bookId) {
   // Column names are snake_case — matches server.js getBookLight() / dbRowToBook()
   const { data, error } = await supabase
     .from('books')
-    .select('book_id, child_name, child_age, child_gender, generated_book, cover_image, full_images, language, character_reference, cropped_photo')
+    .select('book_id, child_name, child_age, child_gender, generated_book, cover_image, full_images, language, character_reference, cropped_photo, illustration_style')
     .eq('book_id', bookId)
     .maybeSingle();
 
@@ -114,6 +114,7 @@ async function fetchBook(bookId) {
     childAge:      data.child_age       || '',
     childGender:   data.child_gender    || '',
     language:      data.language        || 'he',
+    illustrationStyle: data.illustration_style || '',
     generatedBook: data.generated_book  || null,
     coverImage:         data.cover_image         || null,
     fullImages:         data.full_images         || [],
@@ -143,7 +144,58 @@ const OUTPAINT_COVER_CENTERED_PROMPT =
   'soft, warm colors matching the original scene. No additional characters, no faces, no text. ' +
   'The original illustration in the center must remain completely unchanged.';
 
-const WIDE_SPREAD_STYLE_LOCK = 'Soft Storybook illustration style: gentle watercolor textures, warm luminous colors, expressive rounded characters, soft shadows, magical golden light.';
+// ─── Style locks (per book, NEVER hardcoded) ─────────────────────────────────
+// SPEC RULE: the print track must NEVER force a fixed style. The illustration
+// style is ALWAYS read from the book record (illustration_style) and mapped to
+// a faithful wide-spread lock. Wording mirrors server.js STYLE_LOCK so the print
+// file matches what the customer already saw in the digital book.
+//
+// Covers every style the wizard offers, one-for-one:
+//   Soft Storybook → watercolor · Pixar 3D → soft3d
+//   Magical Fantasy → fantasy · Minimal Scandinavian → scandi
+const WIDE_SPREAD_STYLE_LOCKS = {
+  watercolor:
+    'Soft Storybook watercolor illustration style: gentle hand-painted watercolor textures, ' +
+    'soft muted warm colors, delicate transparent washes, gentle pencil outlines, storybook warmth, ' +
+    'expressive rounded characters, soft shadows. Hand-painted watercolor look — NOT 3D, NOT photorealistic, NOT a photo.',
+  soft3d:
+    'Pixar-style 3D rendered animation: glossy smooth 3D surfaces, big expressive eyes, ' +
+    'soft cinematic studio lighting, subsurface scattering on the skin, depth of field, ' +
+    'looks like a frame from a high-quality animated movie. NOT a painting, NOT watercolor, NOT a photo.',
+  fantasy:
+    'Magical fantasy storybook illustration style: enchanted glowing atmosphere, sparkles and soft golden light, ' +
+    'rich jewel-tone colors, dreamy painterly rendering, wonder and warmth. NOT 3D render, NOT photorealistic, NOT a photo.',
+  scandi:
+    'Minimal Scandinavian picture-book illustration style: clean simple shapes, soft muted pastel palette, ' +
+    'generous open space, flat gentle textures, subtle grain, modern nordic style. NOT 3D, NOT photorealistic, NOT a photo.',
+};
+
+// Mirrors server.js STYLE_NAME_MAP exactly — customer-facing name → lock key.
+const PRINT_STYLE_NAME_MAP = {
+  'soft storybook': 'watercolor',
+  'watercolor': 'watercolor',
+  'pixar 3d': 'soft3d',
+  'soft3d': 'soft3d',
+  'magical fantasy': 'fantasy',
+  'fantasy': 'fantasy',
+  'minimal scandinavian': 'scandi',
+  'scandi': 'scandi',
+};
+
+/**
+ * buildWideSpreadStyleLock(rawStyle)
+ * Resolve the book's illustration_style to a faithful wide-spread style lock.
+ * Unknown value → a generic lock that RESPECTS the style name verbatim and
+ * NEVER forces a different style (no silent watercolor fallback).
+ */
+function buildWideSpreadStyleLock(rawStyle) {
+  const raw = (rawStyle || '').toLowerCase().trim();
+  const key = PRINT_STYLE_NAME_MAP[raw];
+  if (key && WIDE_SPREAD_STYLE_LOCKS[key]) return WIDE_SPREAD_STYLE_LOCKS[key];
+  const name = (rawStyle || '').trim() || 'children\u2019s storybook';
+  return `${name} illustration style: high-quality children\u2019s storybook art rendered faithfully in a ${name} aesthetic, ` +
+         'warm and appealing, consistent character design across every spread.';
+}
 
 const WIDE_SPREAD_COMPOSITION =
   'COMPOSITION — STRICT SPREAD LAYOUT (physical book, center is bound spine):\n' +
@@ -633,7 +685,7 @@ function printBrighten(imgBuffer, pct = PRINT_BRIGHTEN_PCT) {
 // Verification summary — printed before ANY paid run. Confirms the exact book,
 // style, and reference photo that were fetched (by the long unique bookId only).
 // Owner reviews this, then re-runs with dryRun:false to spend.
-function printVerificationSummary(book, referenceBuffer, debugDir) {
+function printVerificationSummary(book, referenceBuffer, debugDir, styleLock) {
   const line = '─'.repeat(60);
   console.log(`\n[print-pdf] ${line}`);
   console.log('[print-pdf] VERIFICATION SUMMARY — review before paid generation');
@@ -641,7 +693,8 @@ function printVerificationSummary(book, referenceBuffer, debugDir) {
   console.log(`[print-pdf]   bookId (unique):  ${book.bookId || '(unknown)'}`);
   console.log(`[print-pdf]   child name:       ${book.childName || '(none)'}`);
   console.log(`[print-pdf]   book title:       ${book.generatedBook?.title || '(none)'}`);
-  console.log(`[print-pdf]   style lock:       ${WIDE_SPREAD_STYLE_LOCK.slice(0, 60)}...`);
+  console.log(`[print-pdf]   style (from DB):  ${book.illustrationStyle || '⚠️ (empty — generic fallback)'}`);
+  console.log(`[print-pdf]   style lock used:  ${(styleLock || '').slice(0, 70)}...`);
   console.log(`[print-pdf]   story pages:      ${book.generatedBook?.pages?.length ?? 0}`);
   if (referenceBuffer) {
     const refPath = saveDebug(debugDir, 'reference-used.jpg', referenceBuffer);
@@ -652,7 +705,7 @@ function printVerificationSummary(book, referenceBuffer, debugDir) {
   console.log(`[print-pdf] ${line}\n`);
 }
 
-async function generateWideSpreadImage(openai, referenceBuffer, imagePrompt, characterPromptCore, label) {
+async function generateWideSpreadImage(openai, referenceBuffer, imagePrompt, characterPromptCore, label, styleLock) {
   const { createCanvas, loadImage } = require('canvas');
   const { toFile } = require('openai');
 
@@ -662,7 +715,7 @@ async function generateWideSpreadImage(openai, referenceBuffer, imagePrompt, cha
   const refPng = refCanvas.toBuffer('image/png');
   const referenceFile = await toFile(refPng, 'reference.png', { type: 'image/png' });
 
-  const prompt = `${WIDE_SPREAD_STYLE_LOCK}\n\nCHARACTER (must match exactly across all spreads):\n${characterPromptCore}\n\nSCENE:\n${imagePrompt}\n\n${WIDE_SPREAD_COMPOSITION}`;
+  const prompt = `${styleLock}\n\nCHARACTER (must match exactly across all spreads):\n${characterPromptCore}\n\nSCENE:\n${imagePrompt}\n\n${WIDE_SPREAD_COMPOSITION}`;
   console.log(`[print-pdf] wide spread generate: ${label}...`);
 
   const resp = await openai.images.edit({
@@ -1387,7 +1440,9 @@ async function generatePrintPDF(bookId, options = {}) {
   const pilotPages   = options.pilotPages ?? actualPages; // explicit override or actual count
   const suffix       = (options.pilotPages && options.pilotPages < actualPages) ? `-pilot${pilotPages}` : '';
   const outputPath   = path.join(OUTPUT_DIR, `book-${bookId}${suffix}-print.pdf`);
-  console.log(`[print-pdf] STEP 1 done — child: ${book.childName}, title: ${book.generatedBook?.title || ''}, pages: ${actualPages} (processing: ${pilotPages}) ${elapsed(globalStart)}`);
+  // Style is ALWAYS read from the book record — never a hardcoded constant.
+  const styleLock = buildWideSpreadStyleLock(book.illustrationStyle);
+  console.log(`[print-pdf] STEP 1 done — child: ${book.childName}, title: ${book.generatedBook?.title || ''}, style: ${book.illustrationStyle || '(empty→generic)'}, pages: ${actualPages} (processing: ${pilotPages}) ${elapsed(globalStart)}`);
 
   // ── STEP 2: Load images as Buffers ─────────────────────────────────────────
   console.log(`[print-pdf] STEP 2: loading images...`);
@@ -1442,7 +1497,7 @@ async function generatePrintPDF(bookId, options = {}) {
   for (let i = 0; i < pilotPages; i++) {
     if (!fs.existsSync(path.join(debugDir, `page-${i}-wide.jpg`))) pagesNeedingGen.push(i);
   }
-  printVerificationSummary(book, referenceBuffer, debugDir);
+  printVerificationSummary(book, referenceBuffer, debugDir, styleLock);
   if (options.dryRun) {
     console.log(`[print-pdf] dryRun: ${pagesNeedingGen.length} page(s) would be generated (~$${(pagesNeedingGen.length*0.05).toFixed(2)}). Re-run with dryRun:false to spend.`);
     return { dryRun: true, outputPath, debugDir, pagesNeedingGen, costEstimate: 0 };
@@ -1472,7 +1527,7 @@ async function generatePrintPDF(bookId, options = {}) {
     let wideBuf = null, attempt = 0;
     const MAX_ATTEMPTS = 3; // initial + 2 retries
     while (attempt < MAX_ATTEMPTS) {
-      wideBuf = await generateWideSpreadImage(openai, referenceBuffer, imagePrompt, characterPromptCore, `page-${i}`);
+      wideBuf = await generateWideSpreadImage(openai, referenceBuffer, imagePrompt, characterPromptCore, `page-${i}`, styleLock);
       costEstimate += 0.05;
       const geom = await computeSpreadGeometry(wideBuf);
       const gate = qualityGateSpread(geom.croppedImg, geom.splitX, geom.CROP_H);
