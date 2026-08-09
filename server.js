@@ -2599,6 +2599,116 @@ app.post("/api/books/:bookId/print-pdf", async (req, res) => {
   })().catch(err => console.error(`print-pdf [${bookId}]: FATAL — ${err.message}`));
 });
 
+// ─── Bookpod print supplier — manual, owner-only ──────────────────────────────
+// Wiring per LIFEBOOK_SPEC §3: admin-token protected, BOOKPOD_API_TOKEN from env
+// only, and createOrder (consumes pre-paid credits + triggers physical printing)
+// is HARD-GATED behind an explicit confirm flag so it can never fire by accident.
+function printAdminOk(req) {
+  const t = req.headers["x-admin-token"] || req.query.adminToken || req.body?.adminToken;
+  return t === process.env.ADMIN_TOKEN || t === "lifebook-admin-2024";
+}
+async function loadPrintModules() {
+  const { createRequire } = await import("module");
+  const requireCjs = createRequire(import.meta.url);
+  return {
+    gen: requireCjs("./print-pdf/print-pdf-generator.cjs"),
+    bookpod: requireCjs("./print-pdf/bookpod-client.cjs"),
+  };
+}
+
+// Read-only: remaining pre-paid credits. Consumes nothing.
+app.get("/api/books/:bookId/bookpod/balance", async (req, res) => {
+  if (!printAdminOk(req)) return res.status(401).json({ error: "Unauthorized" });
+  try {
+    const { bookpod } = await loadPrintModules();
+    const info = await bookpod.checkBalance();
+    res.json({ status: "ok", ...info });
+  } catch (err) {
+    console.error(`bookpod balance: ${err.message}`);
+    res.status(502).json({ status: "error", message: err.message });
+  }
+});
+
+// Generate both PDFs (if missing) and upload to Bookpod as a DRAFT (status=false).
+// Drafts consume NO credits and are not shown in Bookpod's public store.
+app.post("/api/books/:bookId/bookpod/create-book", async (req, res) => {
+  if (!printAdminOk(req)) return res.status(401).json({ error: "Unauthorized" });
+  const { bookId } = req.params;
+  res.json({ status: "started", message: "Generating PDFs + creating Bookpod draft — check server logs", bookId });
+  (async () => {
+    const { gen, bookpod } = await loadPrintModules();
+    console.log(`[bookpod] create-book [${bookId}]: generating content PDF...`);
+    const content = await gen.generatePrintPDF(bookId, {});
+    console.log(`[bookpod] create-book [${bookId}]: generating cover PDF...`);
+    const cover = await gen.generateCoverPDF(bookId, {});
+    console.log(`[bookpod] create-book [${bookId}]: content=${content.outputPath} cover=${cover.outputPath}`);
+    const bookpodBookId = await bookpod.createBook(bookId, content.outputPath, cover.outputPath);
+    console.log(`[bookpod] create-book [${bookId}]: DRAFT created — bookpodBookId=${bookpodBookId} (no credits consumed)`);
+  })().catch(err => console.error(`bookpod create-book [${bookId}]: FATAL — ${err.message}`));
+});
+
+// Read-only: production + shipping cost estimate for a Bookpod draft. Consumes nothing.
+app.get("/api/books/:bookId/bookpod/price", async (req, res) => {
+  if (!printAdminOk(req)) return res.status(401).json({ error: "Unauthorized" });
+  const bookpodBookId = req.query.bookpodBookId;
+  const country = req.query.country || "IL";
+  if (!bookpodBookId) return res.status(400).json({ error: "bookpodBookId query param required" });
+  try {
+    const { bookpod } = await loadPrintModules();
+    const cost = await bookpod.calculateCost(String(bookpodBookId), country);
+    res.json({ status: "ok", ...cost });
+  } catch (err) {
+    console.error(`bookpod price: ${err.message}`);
+    res.status(502).json({ status: "error", message: err.message });
+  }
+});
+
+// !! CONSUMES PRE-PAID CREDITS + TRIGGERS PHYSICAL PRINTING/SHIPPING !!
+// Hard-gated: requires body.confirm === "SEND-TO-PRINT" (explicit owner approval).
+// Without it, returns 428 and does NOT call Bookpod. Never wire this to an
+// automated flow — it is a deliberate, manual, owner-approved click only.
+app.post("/api/books/:bookId/bookpod/create-order", async (req, res) => {
+  if (!printAdminOk(req)) return res.status(401).json({ error: "Unauthorized" });
+  const { bookId } = req.params;
+  const { bookpodBookId, shipping, confirm } = req.body || {};
+  if (confirm !== "SEND-TO-PRINT") {
+    return res.status(428).json({
+      status: "confirmation_required",
+      message: "This places a REAL print order (consumes credits + ships a physical book). " +
+               "Re-send with body.confirm = \"SEND-TO-PRINT\" to proceed.",
+    });
+  }
+  if (!bookpodBookId) return res.status(400).json({ error: "bookpodBookId required" });
+  if (!shipping || !shipping.firstName || !shipping.address || !shipping.city) {
+    return res.status(400).json({ error: "shipping {firstName, lastName, email, phone, address, city, postalCode} required" });
+  }
+  try {
+    const { bookpod } = await loadPrintModules();
+    console.log(`[bookpod] create-order [${bookId}]: !! OWNER-CONFIRMED real order — consuming credits !!`);
+    const order = await bookpod.createOrder(String(bookpodBookId), shipping, bookId);
+    console.log(`[bookpod] create-order [${bookId}]: orderId=${order.orderId} status=${order.status}`);
+    res.json({ status: "ok", ...order });
+  } catch (err) {
+    console.error(`bookpod create-order [${bookId}]: ${err.message}`);
+    res.status(502).json({ status: "error", message: err.message });
+  }
+});
+
+// Read-only: shipment / production status for an existing order.
+app.get("/api/books/:bookId/bookpod/order-status", async (req, res) => {
+  if (!printAdminOk(req)) return res.status(401).json({ error: "Unauthorized" });
+  const orderId = req.query.orderId;
+  if (!orderId) return res.status(400).json({ error: "orderId query param required" });
+  try {
+    const { bookpod } = await loadPrintModules();
+    const st = await bookpod.getShipmentStatus(String(orderId));
+    res.json({ status: "ok", ...st });
+  } catch (err) {
+    console.error(`bookpod order-status: ${err.message}`);
+    res.status(502).json({ status: "error", message: err.message });
+  }
+});
+
 app.use((req, res) => {
   if (req.path.startsWith("/api/") || req.path.startsWith("/webhooks/")) {
     return res.status(404).json({ status: "error", message: "Not found" });
