@@ -2585,10 +2585,7 @@ app.post("/api/admin/books/:bookId/generate", requireAdminAuth, async (req, res)
 
 // ─── 404 handler ─────────────────────────────────────────────────────────────
 app.post("/api/books/:bookId/print-pdf", async (req, res) => {
-  const adminToken = req.headers["x-admin-token"] || req.query.adminToken;
-  if (adminToken !== process.env.ADMIN_TOKEN && adminToken !== "lifebook-admin-2024") {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  if (!printAdminOk(req)) return res.status(401).json({ error: "Unauthorized" });
   const { bookId } = req.params;
   const pilotPages = req.body?.pilotPages ?? null;
   res.json({ status: "started", message: "Print PDF generation started — check server logs for progress", bookId, pilotPages });
@@ -2604,8 +2601,12 @@ app.post("/api/books/:bookId/print-pdf", async (req, res) => {
 // only, and createOrder (consumes pre-paid credits + triggers physical printing)
 // is HARD-GATED behind an explicit confirm flag so it can never fire by accident.
 function printAdminOk(req) {
+  // Require a non-empty token that matches. Falls back to the shared literal only
+  // as the *expected* value — never treats a missing token as valid (guards the
+  // undefined===undefined bypass when ADMIN_TOKEN is unset in the environment).
+  const expected = process.env.ADMIN_TOKEN || "lifebook-admin-2024";
   const t = req.headers["x-admin-token"] || req.query.adminToken || req.body?.adminToken;
-  return t === process.env.ADMIN_TOKEN || t === "lifebook-admin-2024";
+  return !!t && t === expected;
 }
 async function loadPrintModules() {
   const { createRequire } = await import("module");
