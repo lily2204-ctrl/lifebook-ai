@@ -1,0 +1,22 @@
+diff --git a/server.js b/server.js
+index d6ef5ba..bf1db19 100644
+--- a/server.js
++++ b/server.js
+@@ -1610,7 +1610,7 @@ app.post("/api/books/:bookId/generate-full", async (req, res) => {
+       // ── Old text-to-image function (unchanged, used when useEditPipeline=false) ──
+       async function generatePageImage(pageIndex) {
+         const page = pages[pageIndex];
+-        const imgPrompt = `Create a premium children's storybook illustration.\n\nIllustration style: ${safeStyle}\n\nCharacter consistency:\n${sanitizeBrandTerms(promptCore)}\n\nScene:\n${sanitizeImagePrompt(page.imagePrompt || "")}\n\nRules:\n- same child identity in this scene as in all other illustrations\n- same face structure, hair color, skin tone, and eye color — no variation\n- warm magical storybook aesthetic\n- keep the lower third of the composition calmer and less visually busy, with a simpler or softer background — this area is reserved for text overlay\n- NO text, letters, words, numbers, or writing of any kind rendered inside the image\n- NO captions, labels, titles, or speech bubbles\n- no watermark\n- elegant composition\n- no logos\n- no brand names\n- no copyrighted costume emblems`;
++        const imgPrompt = `Create a premium children's storybook illustration.\n\nIllustration style: ${safeStyle}\n\nCharacter consistency:\n${sanitizeBrandTerms(promptCore)}\n\nScene:\n${sanitizeImagePrompt(page.imagePrompt || "")}\n\nRules:\n- same child identity in this scene as in all other illustrations\n- same face structure, hair color, skin tone, and eye color — no variation\n- warm magical storybook aesthetic\n- composition rule: place the main character and all narrative elements (other characters, animals, key objects) within the top two-thirds of the frame; the bottom third should show only floor, ground, grass, or calm atmospheric background — never place important characters or animals only at the very bottom of the frame\n- NO text, letters, words, numbers, or writing of any kind rendered inside the image\n- NO captions, labels, titles, or speech bubbles\n- no watermark\n- elegant composition\n- no logos\n- no brand names\n- no copyrighted costume emblems`;
+         const imgResp = await openai.images.generate({ model: "gpt-image-2", prompt: imgPrompt, size: "1024x1536", quality: "high" });
+         return await normalizeImageToBase64(imgResp?.data?.[0]);
+       }
+@@ -1677,7 +1677,7 @@ app.post("/api/books/:bookId/generate-full", async (req, res) => {
+             ? ` Family members share the child's ${skinToneDescription}.`
+             : "";
+           // V2 (image-edit): reference photo is the sole source of child identity — no promptCore text needed.
+-          const scenePrompt = `${styleLock} ${scene}${bibleHint || skinToneHint} Portrait orientation. Character fully centered vertically — full head, hair, and shoulders visible with clear space above; never cropped at the top. No English text or signs; any visible signage should be blank or in Hebrew. Keep the lower third of the composition calmer and less visually busy with a simpler background — this area is reserved for text overlay. NO text, letters, words, numbers, captions, labels, titles, watermarks, logos, or speech bubbles inside the image.`;
++          const scenePrompt = `${styleLock} ${scene}${bibleHint || skinToneHint} Portrait orientation. Character fully centered vertically — full head, hair, and shoulders visible with clear space above; never cropped at the top. No English text or signs; any visible signage should be blank or in Hebrew. Composition rule: place the main character and all narrative elements (other characters, animals, key objects) within the top two-thirds of the frame; the bottom third should show only floor, ground, grass, or calm atmospheric background — never place important characters or animals only at the very bottom of the frame. NO text, letters, words, numbers, captions, labels, titles, watermarks, logos, or speech bubbles inside the image.`;
+           // Single attempt here — outer generatePageImageWithRetry provides the retry loop.
+           // Previously called generatePageImageWithRetryV2 which had its own 3-attempt loop,
+           // causing up to 9 total API calls per page and severe speed regression.

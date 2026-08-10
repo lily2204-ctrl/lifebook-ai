@@ -5,3 +5,10 @@ node_modules/
 print-pdf/debug/
 print-pdf/output/
 *.zip
+
+# print-pdf scratch / dev-only artifacts (kept on disk, not tracked)
+print-pdf/mockup-*.cjs
+print-pdf/pilot-*.cjs
+print-pdf/fonts/sample/
+public/assets/branding/files/
+public/assets/branding/lifebook-logo-print.png
