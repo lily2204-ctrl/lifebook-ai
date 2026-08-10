@@ -11,8 +11,15 @@
  * ============================================================
  *
  * Env vars required:
- *   BOOKPOD_API_TOKEN    — API auth token (never hard-code)
- *   BOOKPOD_API_BASE_URL — optional override (default: https://api.bookpod.co.il)
+ *   BOOKPOD_USER_ID      — Bookpod account user id (sent as x-user-id header)
+ *   BOOKPOD_API_TOKEN    — API auth token (sent as x-custom-token header; never hard-code)
+ *   BOOKPOD_API_BASE_URL — optional override
+ *                          (default: https://cloud-function-bookpod-festjdz7ga-ey.a.run.app)
+ *
+ * Base URL + auth headers confirmed from two cross-referenced sources (2026-08-10):
+ *   1. Official Bookpod API docs (CreateBook / CreateOrder PDFs, Jan-2025).
+ *   2. Official WordPress plugin "bookpod-author-tools" (bpat-book.php) — same
+ *      host hardcoded, same x-user-id + x-custom-token headers.
  */
 
 'use strict';
@@ -26,8 +33,21 @@ const http = require('http');
 // Config
 // ---------------------------------------------------------------------------
 
-const BASE_URL = process.env.BOOKPOD_API_BASE_URL || 'https://api.bookpod.co.il';
-const API_TOKEN = process.env.BOOKPOD_API_TOKEN; // never fall back to a literal
+const BASE_URL = process.env.BOOKPOD_API_BASE_URL || 'https://cloud-function-bookpod-festjdz7ga-ey.a.run.app';
+const USER_ID = process.env.BOOKPOD_USER_ID;     // sent as x-user-id header
+const API_TOKEN = process.env.BOOKPOD_API_TOKEN; // sent as x-custom-token header; never fall back to a literal
+
+// Auth headers used on every request — Bookpod uses x-user-id + x-custom-token,
+// NOT an Authorization: Bearer token (confirmed from docs + the official plugin).
+function authHeaders() {
+  return { 'x-user-id': USER_ID, 'x-custom-token': API_TOKEN };
+}
+
+function assertCredentials() {
+  if (!USER_ID) return '[bookpod] BOOKPOD_USER_ID env var is not set';
+  if (!API_TOKEN) return '[bookpod] BOOKPOD_API_TOKEN env var is not set';
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Internal HTTP helper
@@ -43,8 +63,9 @@ const API_TOKEN = process.env.BOOKPOD_API_TOKEN; // never fall back to a literal
  */
 function apiRequest(method, endpoint, body = null, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
-    if (!API_TOKEN) {
-      return reject(new Error('[bookpod] BOOKPOD_API_TOKEN env var is not set'));
+    const credErr = assertCredentials();
+    if (credErr) {
+      return reject(new Error(credErr));
     }
 
     const url = new URL(endpoint, BASE_URL);
@@ -59,7 +80,7 @@ function apiRequest(method, endpoint, body = null, extraHeaders = {}) {
       path: url.pathname + url.search,
       method,
       headers: {
-        'Authorization': `Bearer ${API_TOKEN}`,
+        ...authHeaders(),
         'Accept': 'application/json',
         ...extraHeaders,
         ...(bodyStr ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
@@ -100,8 +121,9 @@ function apiRequest(method, endpoint, body = null, extraHeaders = {}) {
  */
 function apiUpload(endpoint, fields, files) {
   return new Promise((resolve, reject) => {
-    if (!API_TOKEN) {
-      return reject(new Error('[bookpod] BOOKPOD_API_TOKEN env var is not set'));
+    const credErr = assertCredentials();
+    if (credErr) {
+      return reject(new Error(credErr));
     }
 
     const boundary = `----BookpodBoundary${Date.now()}`;
@@ -137,7 +159,7 @@ function apiUpload(endpoint, fields, files) {
       path: url.pathname + url.search,
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${API_TOKEN}`,
+        ...authHeaders(),
         'Accept': 'application/json',
         'Content-Type': `multipart/form-data; boundary=${boundary}`,
         'Content-Length': bodyBuf.length,
@@ -220,7 +242,14 @@ function splitStreetAddress(fullAddress) {
 /**
  * Check the account balance / remaining print credits.
  *
- * // GET /api/v1/balance
+ * ⚠️ UNCONFIRMED ENDPOINT. Neither the official Bookpod API docs
+ * (CreateBook / CreateOrder PDFs) nor the official WordPress plugin
+ * (bookpod-author-tools) expose ANY balance/credits endpoint — both
+ * document only /api/v1/books and /api/v1/orders. `/api/v1/balance`
+ * below was assumed and will almost certainly 404. Do not rely on this
+ * until the real credits endpoint (if any) is confirmed with Bookpod.
+ *
+ * // GET /api/v1/balance   ← not part of the confirmed API surface
  *
  * @returns {Promise<{ balance: number, currency: string }>}
  */
