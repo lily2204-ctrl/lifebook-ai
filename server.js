@@ -2618,18 +2618,9 @@ async function loadPrintModules() {
   };
 }
 
-// Read-only: remaining pre-paid credits. Consumes nothing.
-app.get("/api/books/:bookId/bookpod/balance", async (req, res) => {
-  if (!printAdminOk(req)) return res.status(401).json({ error: "Unauthorized" });
-  try {
-    const { bookpod } = await loadPrintModules();
-    const info = await bookpod.checkBalance();
-    res.json({ status: "ok", ...info });
-  } catch (err) {
-    console.error(`bookpod balance: ${err.message}`);
-    res.status(502).json({ status: "error", message: err.message });
-  }
-});
+// NOTE: no balance/price/order-status endpoints — the Bookpod API has none.
+// Credits are viewed in the Bookpod dashboard; live wiring is verified by the
+// draft upload (create-book) itself.
 
 // Generate both PDFs (if missing) and upload to Bookpod as a DRAFT (status=false).
 // Drafts consume NO credits and are not shown in Bookpod's public store.
@@ -2647,22 +2638,6 @@ app.post("/api/books/:bookId/bookpod/create-book", async (req, res) => {
     const bookpodBookId = await bookpod.createBook(bookId, content.outputPath, cover.outputPath);
     console.log(`[bookpod] create-book [${bookId}]: DRAFT created — bookpodBookId=${bookpodBookId} (no credits consumed)`);
   })().catch(err => console.error(`bookpod create-book [${bookId}]: FATAL — ${err.message}`));
-});
-
-// Read-only: production + shipping cost estimate for a Bookpod draft. Consumes nothing.
-app.get("/api/books/:bookId/bookpod/price", async (req, res) => {
-  if (!printAdminOk(req)) return res.status(401).json({ error: "Unauthorized" });
-  const bookpodBookId = req.query.bookpodBookId;
-  const country = req.query.country || "IL";
-  if (!bookpodBookId) return res.status(400).json({ error: "bookpodBookId query param required" });
-  try {
-    const { bookpod } = await loadPrintModules();
-    const cost = await bookpod.calculateCost(String(bookpodBookId), country);
-    res.json({ status: "ok", ...cost });
-  } catch (err) {
-    console.error(`bookpod price: ${err.message}`);
-    res.status(502).json({ status: "error", message: err.message });
-  }
 });
 
 // !! CONSUMES PRE-PAID CREDITS + TRIGGERS PHYSICAL PRINTING/SHIPPING !!
@@ -2692,21 +2667,6 @@ app.post("/api/books/:bookId/bookpod/create-order", async (req, res) => {
     res.json({ status: "ok", ...order });
   } catch (err) {
     console.error(`bookpod create-order [${bookId}]: ${err.message}`);
-    res.status(502).json({ status: "error", message: err.message });
-  }
-});
-
-// Read-only: shipment / production status for an existing order.
-app.get("/api/books/:bookId/bookpod/order-status", async (req, res) => {
-  if (!printAdminOk(req)) return res.status(401).json({ error: "Unauthorized" });
-  const orderId = req.query.orderId;
-  if (!orderId) return res.status(400).json({ error: "orderId query param required" });
-  try {
-    const { bookpod } = await loadPrintModules();
-    const st = await bookpod.getShipmentStatus(String(orderId));
-    res.json({ status: "ok", ...st });
-  } catch (err) {
-    console.error(`bookpod order-status: ${err.message}`);
     res.status(502).json({ status: "error", message: err.message });
   }
 });

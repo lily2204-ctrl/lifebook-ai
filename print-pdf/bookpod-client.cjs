@@ -239,49 +239,9 @@ function splitStreetAddress(fullAddress) {
 // Public API functions
 // ---------------------------------------------------------------------------
 
-/**
- * Check the account balance / remaining print credits.
- *
- * ⚠️ UNCONFIRMED ENDPOINT. Neither the official Bookpod API docs
- * (CreateBook / CreateOrder PDFs) nor the official WordPress plugin
- * (bookpod-author-tools) expose ANY balance/credits endpoint — both
- * document only /api/v1/books and /api/v1/orders. `/api/v1/balance`
- * below was assumed and will almost certainly 404. Do not rely on this
- * until the real credits endpoint (if any) is confirmed with Bookpod.
- *
- * // GET /api/v1/balance   ← not part of the confirmed API surface
- *
- * @returns {Promise<{ balance: number, currency: string }>}
- */
-async function checkBalance() {
-  console.log('[bookpod] checkBalance: requesting account balance');
-
-  const response = await apiRequest('GET', '/api/v1/balance');
-
-  const result = {
-    balance: response.balance ?? response.credits ?? response.amount ?? null,
-    currency: response.currency ?? 'ILS',
-  };
-
-  console.log(`[bookpod] checkBalance: done — balance=${result.balance} ${result.currency}`);
-  return result;
-}
-
-/**
- * Check balance and throw if below the minimum required amount.
- *
- * @param {number} [minimumRequired=1]  minimum acceptable balance
- * @returns {Promise<{ balance: number, currency: string }>}
- */
-async function checkBalanceOrThrow(minimumRequired = 1) {
-  const info = await checkBalance();
-  if (info.balance === null || info.balance < minimumRequired) {
-    throw new Error(
-      `[bookpod] Insufficient credits: balance=${info.balance} ${info.currency}, required=${minimumRequired}`
-    );
-  }
-  return info;
-}
+// NOTE: There is no balance/credits endpoint in the Bookpod API (confirmed from
+// the official docs + the official WordPress plugin). Account credits are viewed
+// in the Bookpod dashboard. Live wiring is verified by the draft upload itself.
 
 /**
  * Create a book draft on Bookpod.
@@ -326,34 +286,6 @@ async function createBook(bookId, contentPdfPath, coverPdfPath) {
 
   console.log(`[bookpod] createBook: done — bookpodBookId=${bookpodBookId} (status=draft)`);
   return String(bookpodBookId);
-}
-
-/**
- * Calculate production + shipping cost estimate for a book.
- *
- * // GET /api/v1/books/:bookpodBookId/price?country=IL
- *
- * @param {string} bookpodBookId    Bookpod internal book ID (returned by createBook)
- * @param {string} [shippingCountry='IL']  ISO 3166-1 alpha-2 country code
- * @returns {Promise<{ productionCost: number, shippingCost: number, totalCost: number, currency: string }>}
- */
-async function calculateCost(bookpodBookId, shippingCountry = 'IL') {
-  console.log(`[bookpod] calculateCost: bookpodBookId=${bookpodBookId} country=${shippingCountry}`);
-
-  const response = await apiRequest(
-    'GET',
-    `/api/v1/books/${encodeURIComponent(bookpodBookId)}/price?country=${encodeURIComponent(shippingCountry)}`
-  );
-
-  const result = {
-    productionCost: response.production_cost ?? response.productionCost ?? null,
-    shippingCost:   response.shipping_cost   ?? response.shippingCost   ?? null,
-    totalCost:      response.total_cost       ?? response.totalCost      ?? response.total ?? null,
-    currency:       response.currency ?? 'ILS',
-  };
-
-  console.log(`[bookpod] calculateCost: done — total=${result.totalCost} ${result.currency}`);
-  return result;
 }
 
 /**
@@ -438,31 +370,6 @@ async function createOrder(bookpodBookId, shippingDetails, referenceBookId) {
   return result;
 }
 
-/**
- * Get shipment / production status for an existing order.
- *
- * // GET /api/v1/orders/:orderId
- *
- * @param {string} orderId  Order ID returned by createOrder
- * @returns {Promise<{ orderId: string, status: string, trackingNumber: string|null, trackingUrl: string|null, updatedAt: string|null }>}
- */
-async function getShipmentStatus(orderId) {
-  console.log(`[bookpod] getShipmentStatus: orderId=${orderId}`);
-
-  const response = await apiRequest('GET', `/api/v1/orders/${encodeURIComponent(orderId)}`);
-
-  const result = {
-    orderId:        String(response.id ?? response.order_id ?? orderId),
-    status:         response.status ?? 'unknown',
-    trackingNumber: response.tracking_number ?? response.trackingNumber ?? null,
-    trackingUrl:    response.tracking_url    ?? response.trackingUrl    ?? null,
-    updatedAt:      response.updated_at      ?? response.updatedAt      ?? null,
-  };
-
-  console.log(`[bookpod] getShipmentStatus: done — status=${result.status} tracking=${result.trackingNumber}`);
-  return result;
-}
-
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -472,10 +379,6 @@ module.exports = {
   splitStreetAddress,
 
   // API functions
-  checkBalance,
-  checkBalanceOrThrow,
   createBook,
-  calculateCost,
   createOrder,       // !! OWNER APPROVAL REQUIRED before calling in production !!
-  getShipmentStatus,
 };
