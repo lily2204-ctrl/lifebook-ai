@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lifebook — הזמנות דפוס</title>
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --cream:#fdf6ec; --gold:#c9a84c; --dark:#2c1a0e; --card-bg:#fff; --radius:14px; }
+    body { font-family:'Heebo',sans-serif; background:var(--cream); color:var(--dark); min-height:100vh; }
+
+    header {
+      background:var(--dark); color:#fff; padding:16px 32px;
+      display:flex; align-items:center; justify-content:space-between;
+    }
+    header h1 { font-size:1.2rem; font-weight:600; }
+    #logoutBtn {
+      background:transparent; border:1px solid rgba(255,255,255,0.4); color:#fff;
+      padding:6px 16px; border-radius:6px; cursor:pointer; font-family:inherit; font-size:0.85rem;
+    }
+    #logoutBtn:hover { background:rgba(255,255,255,0.1); }
+
+    .screen { display:none; padding:40px 32px; max-width:960px; margin:0 auto; }
+    .screen.active { display:block; }
+
+    #loginScreen { display:none; align-items:center; justify-content:center; min-height:100vh; padding:0; max-width:unset; }
+    #loginScreen.active { display:flex; }
+    .login-box {
+      background:var(--card-bg); border-radius:var(--radius); padding:40px 48px; width:380px;
+      box-shadow:0 4px 24px rgba(0,0,0,0.10); text-align:center;
+    }
+    .login-box h2 { margin-bottom:28px; font-size:1.4rem; }
+    .login-box input {
+      width:100%; padding:12px 16px; margin-bottom:14px; border:1px solid #ddd; border-radius:8px;
+      font-family:inherit; font-size:1rem; direction:ltr; text-align:left;
+    }
+    .login-box input:focus { outline:2px solid var(--gold); border-color:transparent; }
+    .btn-primary {
+      background:var(--gold); color:#fff; border:none; border-radius:8px; padding:13px 32px;
+      font-family:inherit; font-size:1rem; font-weight:600; cursor:pointer; width:100%;
+    }
+    .btn-primary:hover { filter:brightness(1.1); }
+    .btn-primary:disabled { opacity:0.5; cursor:default; filter:none; }
+    #loginError { color:#c0392b; font-size:0.88rem; margin-top:12px; min-height:20px; }
+
+    #ordersScreen h2 { font-size:1.5rem; margin-bottom:8px; }
+    #ordersSubtitle { color:#666; margin-bottom:28px; font-size:0.95rem; }
+
+    .order-card {
+      background:var(--card-bg); border-radius:var(--radius); padding:22px 24px; margin-bottom:18px;
+      box-shadow:0 2px 12px rgba(0,0,0,0.07); border:1px solid #ede0c8;
+    }
+    .order-head { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+    .order-head h3 { font-size:1.1rem; }
+    .order-badge {
+      display:inline-block; background:#f5ede0; color:#8a6d2a; font-size:0.78rem; font-weight:600;
+      padding:3px 12px; border-radius:20px;
+    }
+    .order-date { color:#999; font-size:0.82rem; }
+    .order-ship { color:#555; font-size:0.88rem; line-height:1.7; margin:14px 0; white-space:pre-line; }
+    .order-links { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
+    .order-links a {
+      color:var(--gold); font-weight:600; font-size:0.9rem; text-decoration:none;
+      border:1px solid var(--gold); border-radius:8px; padding:8px 16px;
+    }
+    .order-links a:hover { background:#fdf3de; }
+    .order-links .missing { color:#c0392b; border:none; padding:0; font-weight:400; }
+    .approve-btn {
+      background:var(--gold); color:#fff; border:none; border-radius:8px; padding:12px 28px;
+      font-family:inherit; font-size:0.98rem; font-weight:700; cursor:pointer;
+    }
+    .approve-btn:hover { filter:brightness(1.1); }
+    .approve-btn:disabled { opacity:0.5; cursor:default; filter:none; }
+    .order-result { margin-top:12px; font-size:0.9rem; min-height:20px; }
+    .order-result.ok  { color:#1e7a3c; }
+    .order-result.err { color:#c0392b; }
+    #ordersEmpty, #ordersError { color:#888; margin-top:16px; }
+    #ordersError { color:#c0392b; }
+    #refreshBtn {
+      background:transparent; border:1px solid var(--gold); color:var(--gold); border-radius:8px;
+      padding:8px 20px; font-family:inherit; font-size:0.9rem; cursor:pointer; margin-bottom:24px;
+    }
+    #refreshBtn:hover { background:#fdf3de; }
+  </style>
+</head>
+<body>
+
+<header id="appHeader" style="display:none">
+  <h1>🖨️ Lifebook — הזמנות דפוס</h1>
+  <button id="logoutBtn">התנתק</button>
+</header>
+
+<!-- ── Login ── -->
+<div id="loginScreen" class="screen active">
+  <div class="login-box">
+    <h2>כניסה לממשק</h2>
+    <input type="text"     id="usernameInput" placeholder="שם משתמש" autocomplete="username">
+    <input type="password" id="passwordInput" placeholder="סיסמה"     autocomplete="current-password">
+    <button class="btn-primary" id="loginBtn">כניסה</button>
+    <div id="loginError"></div>
+  </div>
+</div>
+
+<!-- ── Orders ── -->
+<div id="ordersScreen" class="screen">
+  <h2>הזמנות דפוס ממתינות לאישור</h2>
+  <p id="ordersSubtitle">בדקי את שני קובצי ה-PDF, ואז לחצי «אשר ושלח לדפוס». הלחיצה יוצרת את ההזמנה בבוקפוד ומנצלת קרדיט.</p>
+  <button id="refreshBtn">↻ רענן</button>
+  <div id="ordersList"></div>
+  <div id="ordersEmpty" style="display:none">אין כרגע הזמנות דפוס הממתינות לאישור.</div>
+  <div id="ordersError"></div>
+</div>
+
+<script>
+let token = sessionStorage.getItem("adminToken") || null;
+
+const FMT_LABEL = { printed: "ספר מודפס", bundle: "חבילה דיגיטלי+מודפס", digital: "דיגיטלי" };
+
+(function boot() {
+  if (token) { showScreen("orders"); loadOrders(); }
+  else        { showScreen("login"); }
+})();
+
+function showScreen(name) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  document.getElementById(name + "Screen").classList.add("active");
+  document.getElementById("appHeader").style.display = (name === "login") ? "none" : "flex";
+}
+
+// ── Login ──
+document.getElementById("loginBtn").addEventListener("click", doLogin);
+document.getElementById("passwordInput").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+
+async function doLogin() {
+  const username = document.getElementById("usernameInput").value.trim();
+  const password = document.getElementById("passwordInput").value;
+  const errEl = document.getElementById("loginError");
+  const btn   = document.getElementById("loginBtn");
+  errEl.textContent = "";
+  btn.disabled = true;
+  try {
+    const res  = await fetch("/api/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || "שגיאת התחברות"; return; }
+    token = data.token;
+    sessionStorage.setItem("adminToken", token);
+    showScreen("orders");
+    loadOrders();
+  } catch {
+    errEl.textContent = "שגיאת רשת — נסי שוב";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("logoutBtn").addEventListener("click", () => {
+  token = null;
+  sessionStorage.removeItem("adminToken");
+  showScreen("login");
+});
+
+document.getElementById("refreshBtn").addEventListener("click", loadOrders);
+
+function handleExpiredToken() {
+  token = null;
+  sessionStorage.removeItem("adminToken");
+  showScreen("login");
+  document.getElementById("loginError").textContent = "פג תוקף ה-session — התחברי מחדש";
+}
+
+// ── Orders ──
+async function loadOrders() {
+  const list  = document.getElementById("ordersList");
+  const empty = document.getElementById("ordersEmpty");
+  const errEl = document.getElementById("ordersError");
+  errEl.textContent = "";
+  empty.style.display = "none";
+  list.innerHTML = "<p style='color:#888'>טוען הזמנות...</p>";
+  try {
+    const res  = await apiFetch("/api/admin/print-orders");
+    if (res.status === 401) { handleExpiredToken(); return; }
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || "שגיאה בטעינה"; list.innerHTML = ""; return; }
+    renderOrders(data.orders || []);
+  } catch {
+    list.innerHTML = "";
+    errEl.textContent = "שגיאת רשת בטעינת ההזמנות";
+  }
+}
+
+function renderOrders(orders) {
+  const list  = document.getElementById("ordersList");
+  const empty = document.getElementById("ordersEmpty");
+  list.innerHTML = "";
+  if (!orders.length) { empty.style.display = "block"; return; }
+
+  orders.forEach(o => {
+    const card = document.createElement("div");
+    card.className = "order-card";
+
+    const dateStr = o.createdAt ? new Date(o.createdAt).toLocaleString("he-IL") : "";
+    const s = o.shipping || {};
+    const shipLines = [
+      s.name    ? "👤 " + s.name : "",
+      s.phone   ? "📞 " + s.phone : "",
+      s.email   ? "✉️ " + s.email : "",
+      (s.address || s.city) ? "📍 " + [s.address, s.city, s.zip].filter(Boolean).join(", ") : ""
+    ].filter(Boolean).join("\n");
+
+    const contentLink = o.contentPdfUrl
+      ? `<a href="${o.contentPdfUrl}" target="_blank">📄 קובץ פנים</a>`
+      : `<span class="missing">קובץ פנים חסר</span>`;
+    const coverLink = o.coverPdfUrl
+      ? `<a href="${o.coverPdfUrl}" target="_blank">📕 קובץ כריכה</a>`
+      : `<span class="missing">קובץ כריכה חסר</span>`;
+
+    card.innerHTML = `
+      <div class="order-head">
+        <h3>${o.childName || "(ללא שם)"}</h3>
+        <span class="order-badge">${FMT_LABEL[o.format] || o.format}</span>
+      </div>
+      <div class="order-date">${dateStr}</div>
+      <div class="order-ship">${shipLines || "— אין פרטי משלוח —"}</div>
+      <div class="order-links">${contentLink}${coverLink}</div>
+      <button class="approve-btn" data-id="${o.id}">אשר ושלח לדפוס</button>
+      <div class="order-result" id="result-${o.id}"></div>
+    `;
+
+    const btn = card.querySelector(".approve-btn");
+    btn.addEventListener("click", () => approveOrder(o, btn));
+    list.appendChild(card);
+  });
+}
+
+async function approveOrder(order, btn) {
+  const resultEl = document.getElementById("result-" + order.id);
+  const ok = window.confirm(
+    `לשלוח לדפוס את הספר של ${order.childName || "הלקוח"}?\n` +
+    `פעולה זו יוצרת הזמנה אמיתית בבוקפוד ומנצלת קרדיט.`
+  );
+  if (!ok) return;
+
+  btn.disabled = true;
+  resultEl.className = "order-result";
+  resultEl.textContent = "שולח לדפוס... (יכול לקחת דקה)";
+  try {
+    const res  = await apiFetch(`/api/admin/print-orders/${order.id}/approve`, { method: "POST" });
+    if (res.status === 401) { handleExpiredToken(); return; }
+    const data = await res.json();
+    if (!res.ok) {
+      resultEl.className = "order-result err";
+      resultEl.textContent = "שגיאה: " + (data.error || "נכשל");
+      btn.disabled = false;
+      return;
+    }
+    resultEl.className = "order-result ok";
+    resultEl.textContent = `✅ נשלח לדפוס — מזהה הזמנה בבוקפוד: ${data.bookpodOrderId}`;
+    btn.textContent = "נשלח ✓";
+    setTimeout(loadOrders, 1500);
+  } catch {
+    resultEl.className = "order-result err";
+    resultEl.textContent = "שגיאת רשת — נסי שוב";
+    btn.disabled = false;
+  }
+}
+
+function apiFetch(url, options = {}) {
+  return fetch(url, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+      ...(options.headers || {})
+    }
+  });
+}
+</script>
+
+<script src="accessibility.js"></script>
+</body>
+</html>

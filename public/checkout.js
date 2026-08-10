@@ -46,17 +46,88 @@ document.addEventListener("DOMContentLoaded", async function() {
     if (pagesEl) pagesEl.textContent = String((b.generatedBook && b.generatedBook.pages ? b.generatedBook.pages.length : 0)) + (typeof i18nT === "function" ? i18nT("pageCountSuffix") : " pages");
   }
 
-  var SHOPIFY_STORE   = "https://lifebooksil.com";
-  var SHOPIFY_VARIANT = "51011956375798"; // custom full-personalization story
-  var payBtn = document.getElementById("shopifyPayBtn");
-  if (payBtn) {
-    payBtn.href = SHOPIFY_STORE + "/cart/" + SHOPIFY_VARIANT + ":1?attributes[book_id]=" + encodeURIComponent(bookId);
-    // Analytics: proceed to payment
-    payBtn.addEventListener('click', function() {
-      if (typeof gtag === 'function') gtag('event', 'proceed_to_payment', { value: 89, currency: 'ILS' });
-      if (typeof ttq !== 'undefined') ttq.track('InitiateCheckout', { content_name: 'book', value: 89, currency: 'ILS' });
+  // ── Format selection + cart link ──────────────────────────────────────────
+  // Defaults preserve today's behaviour: digital, single existing variant.
+  var config = {
+    shopifyStore: "https://lifebooksil.com",
+    variants: { digital: "51011956375798", printed: "", bundle: "" },
+    prices:   { digital: 89, printed: 129, bundle: 149 }
+  };
+
+  var payBtn  = document.getElementById("shopifyPayBtn");
+  var grid    = document.getElementById("formatGrid");
+  var cards   = grid ? Array.prototype.slice.call(grid.querySelectorAll(".format-card")) : [];
+  var selectedFormat = "digital";
+
+  function ctaLabel(price) {
+    var base = (typeof i18nT === "function" ? i18nT("checkoutCtaBase") : "המשך לתשלום מאובטח");
+    return base + " — ₪" + price;
+  }
+
+  function buildCartHref(format) {
+    var variant = config.variants[format];
+    if (!variant) return null;
+    return config.shopifyStore + "/cart/" + variant + ":1?attributes[book_id]=" + encodeURIComponent(bookId);
+  }
+
+  function selectFormat(format) {
+    if (!config.variants[format]) return; // not configured yet — ignore
+    selectedFormat = format;
+    cards.forEach(function(c) {
+      var isSel = c.getAttribute("data-format") === format;
+      c.classList.toggle("selected", isSel);
+      c.setAttribute("aria-checked", isSel ? "true" : "false");
+    });
+    var price = config.prices[format] || config.prices.digital;
+    if (payBtn) {
+      var href = buildCartHref(format);
+      if (href) payBtn.href = href;
+      payBtn.textContent = ctaLabel(price);
+    }
+  }
+
+  // Mark unconfigured formats as disabled (variant missing) so nothing broken is shown.
+  function applyAvailability() {
+    cards.forEach(function(c) {
+      var f = c.getAttribute("data-format");
+      var ok = !!config.variants[f];
+      c.classList.toggle("disabled", !ok);
+      if (ok) {
+        c.addEventListener("click", function() { selectFormat(f); });
+        c.addEventListener("keydown", function(e) {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectFormat(f); }
+        });
+      }
     });
   }
+
+  if (payBtn) {
+    payBtn.addEventListener("click", function() {
+      var price = config.prices[selectedFormat] || 89;
+      if (typeof gtag === "function") gtag("event", "proceed_to_payment", { value: price, currency: "ILS", format: selectedFormat });
+      if (typeof ttq !== "undefined") ttq.track("InitiateCheckout", { content_name: "book", value: price, currency: "ILS" });
+    });
+  }
+
+  // Load live config (variant IDs from env). Falls back silently to defaults.
+  try {
+    var cfgRes = await fetch(API_BASE + "/api/public-config");
+    if (cfgRes.ok) {
+      var cfg = await cfgRes.json();
+      if (cfg && cfg.variants) {
+        config.shopifyStore = cfg.shopifyStore || config.shopifyStore;
+        config.variants = Object.assign(config.variants, cfg.variants);
+        if (cfg.prices) config.prices = Object.assign(config.prices, cfg.prices);
+      }
+    }
+  } catch (e) { console.warn("public-config fetch failed, using defaults:", e); }
+
+  applyAvailability();
+  selectFormat("digital"); // default — identical to today's single-format behaviour
+
+  // Keep the CTA label correct after a language toggle (JS owns this button's text).
+  var langBtn = document.getElementById("langToggleBtn");
+  if (langBtn) langBtn.addEventListener("click", function() { setTimeout(function(){ selectFormat(selectedFormat); }, 0); });
 
   try {
     var book = await loadBook();

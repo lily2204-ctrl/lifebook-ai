@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import OpenAI, { toFile } from "openai";
 import path from "path";
+import fs from "fs";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
@@ -334,6 +335,22 @@ async function uploadImageToStorage(bookId, imageName, base64data) {
   return urlData.publicUrl;
 }
 
+// Uploads a local PDF file to Supabase Storage bucket "book-images".
+// Used to give the admin page a link to review print PDFs before approval.
+// Path: {bookId}/print/{name}.pdf. Returns the public URL, or throws.
+async function uploadPdfToStorage(bookId, name, localPath) {
+  const buffer = fs.readFileSync(localPath);
+  const filePath = `${bookId}/print/${name}.pdf`;
+  const { error: uploadError } = await supabase.storage
+    .from("book-images")
+    .upload(filePath, buffer, { contentType: "application/pdf", upsert: true });
+  if (uploadError) throw uploadError;
+  const { data: urlData } = supabase.storage
+    .from("book-images")
+    .getPublicUrl(filePath);
+  return urlData.publicUrl;
+}
+
 // ─── DB helpers ───────────────────────────────────────────────────────────────
 function dbRowToBook(row) {
   if (!row) return null;
@@ -469,9 +486,142 @@ async function updateBookField(bookId, patch) {
   if (error) throw error;
 }
 
+// ─── print_orders DB helpers ────────────────────────────────────────────────
+// One row per paid printed/bundle order. Dedup key = shopify_order_id (UNIQUE).
+// Status lifecycle: awaiting_admin_approval → sent_to_bookpod (via admin page).
+function printOrderRowToObj(row) {
+  if (!row) return null;
+  return {
+    id:              row.id,
+    bookId:          row.book_id,
+    shopifyOrderId:  row.shopify_order_id,
+    format:          row.format,                 // "printed" | "bundle"
+    status:          row.status,                 // "awaiting_admin_approval" | "sent_to_bookpod"
+    shipping:        row.shipping || {},         // jsonb: name/phone/email/address/city/zip/country
+    contentPdfUrl:   row.content_pdf_url || null,
+    coverPdfUrl:     row.cover_pdf_url  || null,
+    bookpodBookId:   row.bookpod_book_id || null,
+    bookpodOrderId:  row.bookpod_order_id || null,
+    createdAt:       row.created_at || null,
+    updatedAt:       row.updated_at || null,
+  };
+}
+
+// Look up an existing print order by Shopify order id (dedup guard).
+async function getPrintOrderByShopifyId(shopifyOrderId) {
+  const { data, error } = await supabase
+    .from("print_orders")
+    .select("*")
+    .eq("shopify_order_id", String(shopifyOrderId))
+    .maybeSingle();
+  if (error) throw error;
+  return printOrderRowToObj(data);
+}
+
+// Insert a new print order. Relies on a UNIQUE(shopify_order_id) constraint as
+// the hard dedup net: a duplicate webhook throws (Postgres 23505) and we swallow it.
+// Returns the created row, or null if it already existed.
+async function insertPrintOrder(rec) {
+  const { data, error } = await supabase
+    .from("print_orders")
+    .insert({
+      book_id:          rec.bookId,
+      shopify_order_id: String(rec.shopifyOrderId),
+      format:           rec.format,
+      status:           "awaiting_admin_approval",
+      shipping:         rec.shipping || {},
+      content_pdf_url:  rec.contentPdfUrl || null,
+      cover_pdf_url:    rec.coverPdfUrl  || null,
+    })
+    .select()
+    .maybeSingle();
+  if (error) {
+    if (error.code === "23505") {   // unique_violation — duplicate webhook
+      console.log(`[print_orders] duplicate shopify_order_id=${rec.shopifyOrderId} — skipping insert`);
+      return null;
+    }
+    throw error;
+  }
+  return printOrderRowToObj(data);
+}
+
+async function updatePrintOrder(id, patch) {
+  const dbPatch = { updated_at: new Date().toISOString() };
+  if ("status"         in patch) dbPatch.status           = patch.status;
+  if ("contentPdfUrl"  in patch) dbPatch.content_pdf_url  = patch.contentPdfUrl;
+  if ("coverPdfUrl"    in patch) dbPatch.cover_pdf_url    = patch.coverPdfUrl;
+  if ("bookpodBookId"  in patch) dbPatch.bookpod_book_id  = patch.bookpodBookId;
+  if ("bookpodOrderId" in patch) dbPatch.bookpod_order_id = patch.bookpodOrderId;
+  const { error } = await supabase
+    .from("print_orders")
+    .update(dbPatch)
+    .eq("id", id);
+  if (error) throw error;
+}
+
+async function listPendingPrintOrders() {
+  const { data, error } = await supabase
+    .from("print_orders")
+    .select("*")
+    .eq("status", "awaiting_admin_approval")
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return (data || []).map(printOrderRowToObj);
+}
+
+async function getPrintOrderById(id) {
+  const { data, error } = await supabase
+    .from("print_orders")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return printOrderRowToObj(data);
+}
+
+// Map the shipping shape we store on the print order ({name, phone, email,
+// address, city, zip, country}) to the shape bookpod.createOrder expects
+// ({firstName, lastName, email, phone, address, city, postalCode, country}).
+function printShippingToBookpod(shipping) {
+  const parts = String(shipping?.name || "").trim().split(/\s+/).filter(Boolean);
+  const firstName = parts.shift() || "";
+  const lastName  = parts.join(" ");
+  return {
+    firstName,
+    lastName,
+    email:      shipping?.email   || "",
+    phone:      shipping?.phone   || "",
+    address:    shipping?.address || "",
+    city:       shipping?.city    || "",
+    postalCode: shipping?.zip     || "",
+    country:    shipping?.country || "IL",
+  };
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+// ─── Public storefront config ─────────────────────────────────────────────────
+// Exposes the Shopify store URL + the 3 format variant IDs to the checkout page.
+// Variant IDs are NOT secret — they already appear in the public cart permalink.
+// Falls back to the current single "digital" variant so the page never breaks
+// before the printed/bundle variants are configured in Shopify.
+const SHOPIFY_STORE_URL = process.env.SHOPIFY_STORE_URL || "https://lifebooksil.com";
+const SHOPIFY_VARIANT_DIGITAL = process.env.SHOPIFY_VARIANT_DIGITAL || "51011956375798";
+const SHOPIFY_VARIANT_PRINTED = process.env.SHOPIFY_VARIANT_PRINTED || "";
+const SHOPIFY_VARIANT_BUNDLE  = process.env.SHOPIFY_VARIANT_BUNDLE  || "";
+app.get("/api/public-config", (req, res) => {
+  res.json({
+    shopifyStore: SHOPIFY_STORE_URL,
+    variants: {
+      digital: SHOPIFY_VARIANT_DIGITAL,
+      printed: SHOPIFY_VARIANT_PRINTED,
+      bundle:  SHOPIFY_VARIANT_BUNDLE,
+    },
+    prices: { digital: 89, printed: 129, bundle: 149 },
+  });
 });
 
 // ─── OpenAI health check ──────────────────────────────────────────────────────
@@ -671,6 +821,135 @@ async function sendPaymentConfirmationEmail(book) {
     console.log("Payment confirmation email sent to:", book.customerEmail);
   } catch(err) {
     console.error("Failed to send payment confirmation email:", err.message);
+  }
+}
+
+// ─── Email: Printed-order confirmation (printed-only purchases) ───────────────
+// Warm + reassuring: the customer paid and will wait ~a week with nothing in hand.
+// Tell them exactly what happens next, an estimated timeline, and that shipping
+// updates arrive by email from our print partner.
+async function sendPrintOrderConfirmationEmail(book) {
+  if (!book.customerEmail) return;
+
+  const appUrl    = process.env.APP_URL || "https://lifebooksil.com";
+  const childName = book.childName || "your child";
+  const bookTitle = book.generatedBook?.title || `${childName}'s Magical Adventure`;
+  const lang      = book.language || "he";
+
+  try {
+    await resend.emails.send({
+      from:    "Lifebook <lifebooks@lifebooksil.com>",
+      to:      book.customerEmail,
+      subject: lang === "en"
+        ? `✅ Thank you! ${childName}'s printed book is on its way`
+        : `✅ תודה! הספר המודפס של ${childName} בדרך אליכם`,
+      html: lang === "en" ? `
+<!DOCTYPE html>
+<html dir="ltr">
+<head><meta charset="UTF-8"/></head>
+<body style="margin:0;padding:0;background:#fdf6ec;font-family:Assistant,Arial,sans-serif;direction:ltr;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#fdf6ec;padding:40px 0;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:24px;overflow:hidden;box-shadow:0 8px 40px rgba(100,60,20,0.12);border:1px solid #ede0c8;">
+        <tr>
+          <td style="background:linear-gradient(135deg,#1a1008,#5c3d1e);padding:36px;text-align:center;">
+            <img src="https://lifebooksil.com/assets/branding/lifebook-logo.webp" alt="Lifebook" style="height:54px;width:auto;display:block;margin:0 auto 10px;" />
+            <div style="font-size:11px;color:#c4a87a;margin-top:5px;letter-spacing:2px;text-transform:uppercase;">Personalized Children's Books</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:36px 40px;direction:ltr;text-align:left;">
+            <p style="font-family:Assistant,Arial,sans-serif;font-size:26px;color:#3a2810;margin:0 0 12px;line-height:1.2;font-weight:700;">Thank you! Your order is confirmed ✅</p>
+            <p style="font-size:15px;color:#7a6048;line-height:1.7;margin:0 0 24px;">
+              <strong>${childName}</strong>'s printed book — <em>"${bookTitle}"</em> — is now heading to our print partner.
+              Here's exactly what happens next:
+            </p>
+            <table cellpadding="0" cellspacing="0" width="100%" style="background:#fdf6ec;border-radius:14px;border:1px solid #ede0c8;margin-bottom:24px;">
+              <tr><td style="padding:20px 22px;direction:ltr;text-align:left;">
+                <p style="font-size:14px;color:#3a2810;line-height:1.9;margin:0;">
+                  <strong style="color:#c8922a;">1.</strong> We prepare your book files and send them to print.<br/>
+                  <strong style="color:#c8922a;">2.</strong> Your softcover book is professionally printed and bound.<br/>
+                  <strong style="color:#c8922a;">3.</strong> It ships to the address you provided — you'll get shipping &amp; tracking updates by email.
+                </p>
+              </td></tr>
+            </table>
+            <p style="font-size:14px;color:#7a6048;line-height:1.7;margin:0 0 8px;">
+              <strong>Estimated time:</strong> printing and delivery usually take about a week.
+              We'll keep you posted at every step — there's nothing you need to do right now. 📦
+            </p>
+            <hr style="border:none;border-top:1px solid #f0e4d0;margin:24px 0 18px;" />
+            <p style="font-size:12px;color:#b09070;line-height:1.6;margin:0;">
+              Questions? Just reply to this email and we'll be happy to help.<br/>
+              Thank you for creating with Lifebook 💛
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#fdf6ec;border-top:1px solid #ede0c8;padding:16px 40px;text-align:center;">
+            <p style="font-size:11px;color:#c4a87a;margin:0;">© 2026 Lifebook · <a href="${appUrl}/contact.html" style="color:#c8922a;text-decoration:none;">Contact Us</a></p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+      `.trim() : `
+<!DOCTYPE html>
+<html dir="rtl">
+<head><meta charset="UTF-8"/></head>
+<body style="margin:0;padding:0;background:#fdf6ec;font-family:Assistant,Arial,sans-serif;direction:rtl;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#fdf6ec;padding:40px 0;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:24px;overflow:hidden;box-shadow:0 8px 40px rgba(100,60,20,0.12);border:1px solid #ede0c8;">
+        <tr>
+          <td style="background:linear-gradient(135deg,#1a1008,#5c3d1e);padding:36px;text-align:center;">
+            <img src="https://lifebooksil.com/assets/branding/lifebook-logo.webp" alt="Lifebook" style="height:54px;width:auto;display:block;margin:0 auto 10px;" />
+            <div style="font-size:11px;color:#c4a87a;margin-top:5px;letter-spacing:2px;text-transform:uppercase;">ספרי ילדים מותאמים אישית</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:36px 40px;direction:rtl;text-align:right;">
+            <p style="font-family:Assistant,Arial,sans-serif;font-size:26px;color:#3a2810;margin:0 0 12px;line-height:1.2;font-weight:700;">תודה! ההזמנה שלכם התקבלה ✅</p>
+            <p style="font-size:15px;color:#7a6048;line-height:1.7;margin:0 0 24px;">
+              הספר המודפס של <strong>${childName}</strong> — <em>"${bookTitle}"</em> — יוצא עכשיו לדרך אל בית הדפוס שלנו.
+              הנה בדיוק מה שקורה מכאן:
+            </p>
+            <table cellpadding="0" cellspacing="0" width="100%" style="background:#fdf6ec;border-radius:14px;border:1px solid #ede0c8;margin-bottom:24px;">
+              <tr><td style="padding:20px 22px;direction:rtl;text-align:right;">
+                <p style="font-size:14px;color:#3a2810;line-height:1.9;margin:0;">
+                  <strong style="color:#c8922a;">1.</strong> אנחנו מכינים את קובצי הספר ושולחים אותם לדפוס.<br/>
+                  <strong style="color:#c8922a;">2.</strong> הספר בכריכה רכה מודפס ונכרך באיכות מקצועית.<br/>
+                  <strong style="color:#c8922a;">3.</strong> הוא נשלח לכתובת שמסרתם — ועדכוני המשלוח והמעקב יגיעו אליכם במייל.
+                </p>
+              </td></tr>
+            </table>
+            <p style="font-size:14px;color:#7a6048;line-height:1.7;margin:0 0 8px;">
+              <strong>זמן משוער:</strong> ההדפסה והמשלוח לוקחים בדרך כלל כשבוע.
+              נעדכן אתכם בכל שלב — אין שום דבר שצריך לעשות כרגע. 📦
+            </p>
+            <hr style="border:none;border-top:1px solid #f0e4d0;margin:24px 0 18px;" />
+            <p style="font-size:12px;color:#b09070;line-height:1.6;margin:0;">
+              יש שאלות? פשוט ענו למייל הזה ונשמח לעזור.<br/>
+              תודה שיצרתם עם Lifebook 💛
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#fdf6ec;border-top:1px solid #ede0c8;padding:16px 40px;text-align:center;">
+            <p style="font-size:11px;color:#c4a87a;margin:0;">© 2026 Lifebook · <a href="${appUrl}/contact.html" style="color:#c8922a;text-decoration:none;">צור קשר</a></p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+      `.trim()
+    });
+    console.log("Printed-order confirmation email sent to:", book.customerEmail);
+  } catch(err) {
+    console.error("Failed to send printed-order confirmation email:", err.message);
   }
 }
 
@@ -1118,6 +1397,63 @@ app.post("/webhooks/lemonsqueezy", async (req, res) => {
 });
 
 
+// ─── Format detection + shipping extraction (Shopify orders/paid) ────────────
+// Determine which format was bought from the order's line-item variant IDs.
+// Falls back to "digital" so the existing behaviour is the default for anything
+// that doesn't explicitly match the printed/bundle variant.
+function detectOrderFormat(payload) {
+  const variantIds = (payload?.line_items || []).map(i => String(i?.variant_id || ""));
+  if (SHOPIFY_VARIANT_BUNDLE  && variantIds.includes(String(SHOPIFY_VARIANT_BUNDLE)))  return "bundle";
+  if (SHOPIFY_VARIANT_PRINTED && variantIds.includes(String(SHOPIFY_VARIANT_PRINTED))) return "printed";
+  return "digital";
+}
+
+// Pull shipping details (incl. phone) from a Shopify orders/paid payload.
+function extractShipping(payload) {
+  const s = payload?.shipping_address || payload?.customer?.default_address || {};
+  const name = [s.first_name, s.last_name].filter(Boolean).join(" ").trim()
+    || [payload?.customer?.first_name, payload?.customer?.last_name].filter(Boolean).join(" ").trim();
+  const address = [s.address1, s.address2].filter(Boolean).join(" ").trim();
+  return {
+    name,
+    phone:   (s.phone || payload?.phone || payload?.customer?.phone || "").trim(),
+    email:   (payload?.email || payload?.contact_email || "").trim(),
+    address,
+    city:    (s.city || "").trim(),
+    zip:     (s.zip || "").trim(),
+    country: (s.country_code || s.country || "IL").trim(),
+  };
+}
+
+// Register a printed/bundle order: dedup, generate the 2 PDFs, upload for review,
+// and STOP at the admin-approval station. NEVER calls Bookpod here — the owner's
+// manual "approve & send to print" click is the only path to Bookpod.
+async function registerPrintOrder(bookId, orderId, format, payload) {
+  // Dedup net #1: internal check by Shopify order id.
+  const existing = await getPrintOrderByShopifyId(orderId);
+  if (existing) {
+    console.log(`[print] order ${orderId} already registered (id=${existing.id}) — skipping`);
+    return;
+  }
+  const shipping = extractShipping(payload);
+  // Insert FIRST (status=awaiting_admin_approval). Dedup net #2 = UNIQUE(shopify_order_id).
+  const rec = await insertPrintOrder({ bookId, shopifyOrderId: orderId, format, shipping });
+  if (!rec) { console.log(`[print] order ${orderId} lost insert race — skipping`); return; }
+  console.log(`[print] registered order ${orderId} (${format}) — generating PDFs...`);
+
+  try {
+    const { gen } = await loadPrintModules();
+    const content = await gen.generatePrintPDF(bookId, {});
+    const cover   = await gen.generateCoverPDF(bookId, {});
+    const contentPdfUrl = await uploadPdfToStorage(bookId, "content", content.outputPath);
+    const coverPdfUrl   = await uploadPdfToStorage(bookId, "cover",   cover.outputPath);
+    await updatePrintOrder(rec.id, { contentPdfUrl, coverPdfUrl });
+    console.log(`[print] order ${orderId}: PDFs ready — content=${contentPdfUrl} cover=${coverPdfUrl} (awaiting admin approval)`);
+  } catch (err) {
+    console.error(`[print] order ${orderId}: PDF generation failed — ${err.message}. Row kept for manual retry.`);
+  }
+}
+
 // ─── Shopify Webhook (orders/paid) ───────────────────────────────────────────
 app.post("/webhooks/shopify", async (req, res) => {
   console.log("[Shopify Webhook] received");
@@ -1161,40 +1497,65 @@ app.post("/webhooks/shopify", async (req, res) => {
       });
       const bookId = attr?.value;
 
-      console.log(`[Shopify Webhook] orderId: ${orderId}, bookId: ${bookId}, email: ${shopifyEmail || "(none)"}`);
+      const format = detectOrderFormat(payload);
+      console.log(`[Shopify Webhook] orderId: ${orderId}, bookId: ${bookId}, format: ${format}, email: ${shopifyEmail || "(none)"}`);
 
       if (!bookId) {
         console.error("[Shopify Webhook] no book_id in note_attributes:", JSON.stringify(noteAttrs));
         return;
       }
 
-      const unlockPatch = {
-        paymentStatus:    "paid",
-        purchaseUnlocked: true,
-        stripeSessionId:  orderId   // reusing existing DB column for Shopify order ID
-      };
-      if (shopifyEmail) unlockPatch.customerEmail = shopifyEmail;
-      await updateBookField(bookId, unlockPatch);
-      console.log(`[Shopify Webhook] book ${bookId} unlocked via Shopify order ${orderId}`);
+      const hasDigital = (format === "digital" || format === "bundle");
+      const hasPrint   = (format === "printed" || format === "bundle");
 
-      const paidBook = await getBook(bookId);
-      if (!paidBook) {
-        console.error(`[Shopify Webhook] could not fetch book after unlock: ${bookId}`);
-        return;
+      // ── Digital track (digital + bundle): UNCHANGED behaviour ──
+      // Printed-only NEVER unlocks digital viewing — that's what the bundle is for.
+      if (hasDigital) {
+        const unlockPatch = {
+          paymentStatus:    "paid",
+          purchaseUnlocked: true,
+          stripeSessionId:  orderId   // reusing existing DB column for Shopify order ID
+        };
+        if (shopifyEmail) unlockPatch.customerEmail = shopifyEmail;
+        await updateBookField(bookId, unlockPatch);
+        console.log(`[Shopify Webhook] book ${bookId} unlocked via Shopify order ${orderId}`);
+
+        const paidBook = await getBook(bookId);
+        if (!paidBook) {
+          console.error(`[Shopify Webhook] could not fetch book after unlock: ${bookId}`);
+        } else {
+          await sendPaymentConfirmationEmail(paidBook);
+          console.log(`[Shopify Webhook] payment confirmation email sent`);
+
+          const pages      = paidBook.generatedBook?.pages || [];
+          const images     = paidBook.fullImages || [];
+          const readyCount = images.filter(Boolean).length;
+          const threshold  = Math.max(1, pages.length - 2);
+          const allDone    = pages.length > 0 && readyCount >= threshold;
+          console.log(`[Shopify Webhook] readyCount=${readyCount}/${pages.length}, allDone=${allDone}`);
+          if (allDone) {
+            await sendBookReadyEmail(paidBook);
+            console.log(`[Shopify Webhook] book ready email sent`);
+          }
+        }
+      } else {
+        // Printed-only: record payment WITHOUT unlocking digital access.
+        const patch = { paymentStatus: "paid", stripeSessionId: orderId };
+        if (shopifyEmail) patch.customerEmail = shopifyEmail;
+        await updateBookField(bookId, patch);
+        console.log(`[Shopify Webhook] printed-only order ${orderId} recorded (no digital unlock)`);
+
+        // Warm confirmation email so the customer isn't left in the dark for a week.
+        const book = await getBook(bookId);
+        if (book) {
+          await sendPrintOrderConfirmationEmail(book);
+          console.log(`[Shopify Webhook] printed-order confirmation email sent`);
+        }
       }
 
-      await sendPaymentConfirmationEmail(paidBook);
-      console.log(`[Shopify Webhook] payment confirmation email sent`);
-
-      const pages      = paidBook.generatedBook?.pages || [];
-      const images     = paidBook.fullImages || [];
-      const readyCount = images.filter(Boolean).length;
-      const threshold  = Math.max(1, pages.length - 2);
-      const allDone    = pages.length > 0 && readyCount >= threshold;
-      console.log(`[Shopify Webhook] readyCount=${readyCount}/${pages.length}, allDone=${allDone}`);
-      if (allDone) {
-        await sendBookReadyEmail(paidBook);
-        console.log(`[Shopify Webhook] book ready email sent`);
+      // ── Print track (printed + bundle): register + generate PDFs, stop at approval ──
+      if (hasPrint) {
+        await registerPrintOrder(bookId, orderId, format, payload);
       }
     } catch (err) {
       console.error("[Shopify Webhook] processing failed:", err.message, err.stack);
@@ -2582,6 +2943,87 @@ app.post("/api/admin/books/:bookId/generate", requireAdminAuth, async (req, res)
   }).catch(err =>
     console.error(`[admin] internal generate call failed for ${bookId}:`, err.message)
   );
+});
+
+// ─── Admin: Print orders — pending list ───────────────────────────────────────
+// Minimal approval station: lists print/bundle orders that are waiting for the
+// owner's manual "approve & send to print" click. Each row carries the child name
+// and links to the two PDFs the owner reviews before approving.
+app.get("/api/admin/print-orders", requireAdminAuth, async (req, res) => {
+  try {
+    const orders = await listPendingPrintOrders();
+    const enriched = await Promise.all(orders.map(async (o) => {
+      let childName = "";
+      try {
+        const book = await getBookLight(o.bookId);
+        childName = book?.childName || "";
+      } catch { /* name is best-effort only */ }
+      return {
+        id:            o.id,
+        bookId:        o.bookId,
+        childName,
+        format:        o.format,
+        createdAt:     o.createdAt,
+        shipping:      o.shipping,
+        contentPdfUrl: o.contentPdfUrl,
+        coverPdfUrl:   o.coverPdfUrl,
+      };
+    }));
+    return res.json({ orders: enriched });
+  } catch (err) {
+    console.error("[admin] list print-orders error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Admin: Print orders — approve & send to print ────────────────────────────
+// !! CONSUMES PRE-PAID BOOKPOD CREDITS + TRIGGERS PHYSICAL PRINTING/SHIPPING !!
+// This is the ONLY path that reaches Bookpod. The webhook never does. It runs the
+// draft (createBook) and the order (createOrder) together, exactly as the owner
+// asked: one click = draft + order. Idempotent on status.
+app.post("/api/admin/print-orders/:id/approve", requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const order = await getPrintOrderById(id);
+    if (!order) return res.status(404).json({ error: "Print order not found" });
+    if (order.status !== "awaiting_admin_approval") {
+      return res.status(409).json({ error: `Order is not awaiting approval (status=${order.status})` });
+    }
+
+    const shipping = printShippingToBookpod(order.shipping);
+    if (!shipping.firstName || !shipping.address || !shipping.city) {
+      return res.status(400).json({ error: "Order is missing shipping name/address/city — cannot send to print" });
+    }
+
+    const { gen, bookpod } = await loadPrintModules();
+
+    console.log(`[admin] approve print order ${id} (book ${order.bookId}): generating PDFs...`);
+    const content = await gen.generatePrintPDF(order.bookId, {});
+    const cover   = await gen.generateCoverPDF(order.bookId, {});
+
+    console.log(`[admin] approve print order ${id}: creating Bookpod draft...`);
+    const bookpodBookId = await bookpod.createBook(order.bookId, content.outputPath, cover.outputPath);
+
+    console.log(`[admin] approve print order ${id}: !! placing REAL Bookpod order — consuming credits !!`);
+    const bpOrder = await bookpod.createOrder(String(bookpodBookId), shipping, order.bookId);
+
+    await updatePrintOrder(order.id, {
+      status:         "sent_to_bookpod",
+      bookpodBookId:  String(bookpodBookId),
+      bookpodOrderId: String(bpOrder.orderId),
+    });
+    console.log(`[admin] approve print order ${id}: SENT — bookpodBookId=${bookpodBookId} bookpodOrderId=${bpOrder.orderId}`);
+
+    return res.json({
+      status:         "sent_to_bookpod",
+      bookpodBookId:  String(bookpodBookId),
+      bookpodOrderId: String(bpOrder.orderId),
+      trackingNumber: bpOrder.trackingNumber || null,
+    });
+  } catch (err) {
+    console.error(`[admin] approve print order ${id} FAILED:`, err.message);
+    return res.status(502).json({ error: err.message });
+  }
 });
 
 // ─── 404 handler ─────────────────────────────────────────────────────────────

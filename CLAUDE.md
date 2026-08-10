@@ -52,7 +52,17 @@ AI personalized children's storybook — a live commercial product. Customer flo
 1. **Wizard** — fully custom book generated from the customer's photo and details.
 2. **Admin templates** — customer orders a template product in the Shopify store and uploads photos via the in-store app; the owner generates the book in the admin.
 
-**Two delivery formats**: digital PDF (existing) and printed book via Bookpod (in development on `feature/print-pdf`). Any book from any path can ship in either format — the print module works at the bookId level. A customer who buys a printed book ALSO receives the same print file as a digital download (identical file, identical dimensions).
+**Three purchasable formats** (see Commerce Formats below): **digital** (89₪), **printed** softcover (129₪ + shipping), **bundle** digital+printed (149₪ + shipping). The print module works at the bookId level, so any book from any path can be printed. **Only the bundle grants digital access in addition to the printed book. A printed-only order does NOT unlock the digital viewer/PDF** — that customer receives the physical printed book plus a warm confirmation email, not a digital download.
+
+## Commerce Formats — `feature/commerce-formats`
+Three Shopify variants, selected on the checkout/summary page (digital is the default, preserving today's single-format behaviour). Variant IDs read from env vars via `GET /api/public-config`; prices digital 89 / printed 129 / bundle 149 (₪).
+- **Env vars**: `SHOPIFY_VARIANT_DIGITAL`, `SHOPIFY_VARIANT_PRINTED`, `SHOPIFY_VARIANT_BUNDLE`. Unset print/bundle variants render as disabled cards — nothing breaks.
+- **Webhook split** (`orders/paid`): `detectOrderFormat()` maps the line-item variant → digital / printed / bundle.
+  - **digital** → existing unlock + two-email path, byte-for-byte unchanged.
+  - **printed** → mark `paymentStatus=paid` WITHOUT `purchaseUnlocked` (no digital access) + `sendPrintOrderConfirmationEmail()` + `registerPrintOrder()`.
+  - **bundle** → both: digital unlock immediately AND `registerPrintOrder()`.
+- **`registerPrintOrder()`** dedups (internal check + UNIQUE(shopify_order_id)), generates the 2 print PDFs, uploads them for review, and STOPS at `status=awaiting_admin_approval`. It NEVER calls Bookpod.
+- **Approval station** (owner-only): `print-orders.html` (JWT admin login) lists pending print orders (child name, format, date, 2 PDF links) with an "אשר ושלח לדפוס" button → `POST /api/admin/print-orders/:id/approve`, which runs `bookpod.createBook` (draft) + `bookpod.createOrder` (real order, consumes credits) together and sets `status=sent_to_bookpod`. This is the ONLY path that reaches Bookpod.
 
 ## URLs
 - Live site: https://lifebooksil.com · App subdomain: https://app.lifebooksil.com

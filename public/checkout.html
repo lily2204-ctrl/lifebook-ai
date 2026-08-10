@@ -42,6 +42,22 @@
     .price-text strong{display:block;font-family:'Assistant',sans-serif;font-size:17px;color:var(--brown);margin-bottom:3px}
     .price-text span{font-size:13px;color:var(--text-muted)}
     .price-amount{font-family:'Assistant',sans-serif;font-size:36px;color:#c9a84c;font-weight:800;flex-shrink:0}
+    /* Format selection cards */
+    .format-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:22px}
+    .format-card{position:relative;background:#fffdf7;border:1.5px solid var(--parchment);border-radius:18px;padding:18px 16px 16px;cursor:pointer;transition:all 0.2s;text-align:right;display:flex;flex-direction:column;min-height:150px}
+    .format-card:hover{border-color:var(--gold-light);box-shadow:var(--shadow-gold)}
+    .format-card.selected{border-color:var(--gold);box-shadow:var(--shadow-gold);background:#fff8ed}
+    .format-card.disabled{opacity:0.45;cursor:not-allowed;filter:grayscale(0.3)}
+    .format-card.disabled:hover{border-color:var(--parchment);box-shadow:none}
+    .format-radio{position:absolute;top:14px;left:14px;width:20px;height:20px;border-radius:50%;border:2px solid var(--gold-pale);background:var(--white);transition:all 0.2s}
+    .format-card.selected .format-radio{border-color:var(--gold);background:radial-gradient(circle,var(--gold) 0 5px,var(--white) 6px)}
+    .format-icon{font-size:26px;margin-bottom:8px}
+    .format-name{font-family:'Assistant',sans-serif;font-size:16px;font-weight:800;color:var(--brown);margin-bottom:4px;line-height:1.2}
+    .format-desc{font-size:12px;color:var(--text-muted);line-height:1.45;margin-bottom:10px;flex:1}
+    .format-price{font-family:'Assistant',sans-serif;font-size:24px;font-weight:800;color:#c9a84c}
+    .format-price small{font-size:12px;font-weight:600;color:var(--text-muted)}
+    .format-badge{display:inline-block;font-size:10px;font-weight:700;color:var(--gold);background:#fdf0d5;border:1px solid var(--gold-pale);border-radius:50px;padding:2px 8px;margin-top:6px;letter-spacing:0.3px}
+    @media(max-width:640px){.format-grid{grid-template-columns:1fr}.format-card{min-height:0;flex-direction:row;align-items:center;gap:14px;text-align:right;padding:14px 16px}.format-card .format-icon{margin-bottom:0}.format-card .format-desc{display:none}.format-radio{top:50%;transform:translateY(-50%)}}
     .pay-btn{width:100%;background:linear-gradient(135deg,var(--gold-light),var(--gold));color:var(--white);border:none;border-radius:50px;padding:18px 36px;font-size:18px;font-weight:700;cursor:pointer;box-shadow:0 8px 32px rgba(200,146,42,0.4);transition:all 0.25s;font-family:'Assistant',sans-serif;letter-spacing:0.3px;margin-bottom:12px;display:block;text-align:center}
     .pay-btn:hover{transform:translateY(-2px);box-shadow:0 12px 42px rgba(200,146,42,0.55)}
     .pay-btn:disabled{opacity:0.6;cursor:not-allowed;transform:none}
@@ -114,20 +130,38 @@
         <div class="detail-item"><div class="detail-label" data-i18n="labelStyle">STYLE</div><div class="detail-value" id="style">—</div></div>
         <div class="detail-item"><div class="detail-label" data-i18n="labelPages">PAGES</div><div class="detail-value" id="pages">—</div></div>
       </div>
-      <div class="price-box">
-        <div class="price-text">
-          <strong data-i18n="productName">Digital Storybook</strong>
-          <span data-i18n="productDesc">PDF download · All pages</span>
+      <h2 class="section-title" data-i18n="chooseFormatTitle" style="margin-top:6px">בחרו את הפורמט</h2>
+      <div class="format-grid" id="formatGrid">
+        <div class="format-card selected" data-format="digital" role="radio" aria-checked="true" tabindex="0">
+          <span class="format-radio" aria-hidden="true"></span>
+          <span class="format-icon">📄</span>
+          <div class="format-name" data-i18n="fmtDigitalName">ספר דיגיטלי</div>
+          <div class="format-desc" data-i18n="fmtDigitalDesc">הורדת PDF · כל העמודים · מוכן תוך דקות</div>
+          <div class="format-price">89 <small>₪</small></div>
         </div>
-        <div class="price-amount">&#8362;89</div>
+        <div class="format-card" data-format="printed" role="radio" aria-checked="false" tabindex="0">
+          <span class="format-radio" aria-hidden="true"></span>
+          <span class="format-icon">📗</span>
+          <div class="format-name" data-i18n="fmtPrintedName">ספר מודפס</div>
+          <div class="format-desc" data-i18n="fmtPrintedDesc">כריכה רכה · נשלח עד הבית · + משלוח</div>
+          <div class="format-price">129 <small>₪</small></div>
+        </div>
+        <div class="format-card" data-format="bundle" role="radio" aria-checked="false" tabindex="0">
+          <span class="format-radio" aria-hidden="true"></span>
+          <span class="format-icon">✨</span>
+          <div class="format-name" data-i18n="fmtBundleName">חבילה: דיגיטלי + מודפס</div>
+          <div class="format-desc" data-i18n="fmtBundleDesc">הטוב משני העולמות · + משלוח</div>
+          <div class="format-price">149 <small>₪</small></div>
+          <span class="format-badge" data-i18n="fmtBundleBadge">הכי משתלם</span>
+        </div>
       </div>
 
-      <a id="shopifyPayBtn" class="pay-btn" href="#" style="text-decoration:none;" data-i18n="checkoutCta">Proceed to Secure Checkout — ₪89</a>
+      <a id="shopifyPayBtn" class="pay-btn" href="#" style="text-decoration:none;">המשך לתשלום מאובטח — ₪89</a>
 
       <div class="trust-row">
-        <span class="trust-item">⚡ <span data-i18n="deliveryTime">Ready in minutes</span></span>
-        <span class="trust-item">📖 <span data-i18n="allPages">All 12 pages</span></span>
-        <span class="trust-item">📄 <span data-i18n="pdfIncluded">PDF included</span></span>
+        <span class="trust-item">⚡ <span data-i18n="deliveryTime">מוכן תוך דקות</span></span>
+        <span class="trust-item">🔒 <span data-i18n="securePay">תשלום מאובטח</span></span>
+        <span class="trust-item">📖 <span data-i18n="allPages">כל 12 העמודים</span></span>
       </div>
       <div class="status-note" id="checkoutStatus"></div>
     </div>
