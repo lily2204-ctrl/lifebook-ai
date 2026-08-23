@@ -3,6 +3,7 @@ import cors from "cors";
 import OpenAI, { toFile } from "openai";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
@@ -349,6 +350,18 @@ async function uploadPdfToStorage(bookId, name, localPath) {
     .from("book-images")
     .getPublicUrl(filePath);
   return urlData.publicUrl;
+}
+
+// Download a stored PDF back to a local temp file. Used by the approval flow so
+// Bookpod receives the exact bytes the owner reviewed — never a fresh render.
+async function downloadPdfToTemp(url, filename) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to download approved PDF (HTTP ${res.status}) from ${url}`);
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lifebook-print-"));
+  const filePath = path.join(dir, filename);
+  fs.writeFileSync(filePath, buffer);
+  return filePath;
 }
 
 // ─── DB helpers ───────────────────────────────────────────────────────────────
@@ -1425,6 +1438,64 @@ function extractShipping(payload) {
   };
 }
 
+// ─── Print readiness: wait for the digital pipeline to finish ────────────────
+// A paid webhook can land while generate-full is still writing page images
+// (seen in production on order 7255021748470: the webhook fired ~40s before the
+// last 5 illustrations were uploaded, so the print run read a half-written book).
+// Reads only the small columns — full_images holds Storage URLs, not blobs.
+async function readPrintReadiness(bookId) {
+  const { data, error } = await supabase
+    .from("books")
+    .select("cover_image, full_images, generated_book")
+    .eq("book_id", bookId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return { found: false, ready: false, have: 0, need: 0, hasCover: false };
+  const need = data.generated_book?.pages?.length || 0;
+  const have = (data.full_images || []).filter(Boolean).length;
+  const hasCover = !!data.cover_image;
+  return { found: true, ready: need > 0 && have >= need && hasCover, have, need, hasCover };
+}
+
+// Poll until every illustration + the cover exist, or the timeout expires.
+// Returns true when ready. Safe to call on an already-finished book (returns on
+// the first check). Runs only in the print track — never in the digital path.
+async function waitForBookPrintReady(bookId, { timeoutMs = 12 * 60 * 1000, intervalMs = 10 * 1000, label = "" } = {}) {
+  const started = Date.now();
+  let last = null;
+  while (true) {
+    last = await readPrintReadiness(bookId);
+    if (last.ready) {
+      const waited = ((Date.now() - started) / 1000).toFixed(0);
+      console.log(`[print] ${label}book ${bookId} ready for print — ${last.have}/${last.need} illustrations + cover (waited ${waited}s)`);
+      return true;
+    }
+    if (Date.now() - started >= timeoutMs) {
+      console.error(
+        `[print] ${label}book ${bookId} NOT ready after ${(timeoutMs / 1000).toFixed(0)}s — ` +
+        `${last.have}/${last.need} illustrations, cover=${last.hasCover ? "yes" : "MISSING"}. ` +
+        `Giving up; the print order row is kept for a manual "generate PDFs" retry.`
+      );
+      return false;
+    }
+    console.log(`[print] ${label}book ${bookId} still generating — ${last.have}/${last.need} illustrations, cover=${last.hasCover ? "yes" : "no"} — waiting ${intervalMs / 1000}s`);
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+}
+
+// Generate the two print PDFs for an existing print_orders row, upload them to
+// Storage and record the URLs. NEVER touches Bookpod. Shared by the webhook and
+// by the admin "generate PDFs" retry button. Throws on failure.
+async function generateAndStorePrintPdfs(rec) {
+  const { gen } = await loadPrintModules();
+  const content = await gen.generatePrintPDF(rec.bookId, {});
+  const cover   = await gen.generateCoverPDF(rec.bookId, {});
+  const contentPdfUrl = await uploadPdfToStorage(rec.bookId, "content", content.outputPath);
+  const coverPdfUrl   = await uploadPdfToStorage(rec.bookId, "cover",   cover.outputPath);
+  await updatePrintOrder(rec.id, { contentPdfUrl, coverPdfUrl });
+  return { contentPdfUrl, coverPdfUrl };
+}
+
 // Register a printed/bundle order: dedup, generate the 2 PDFs, upload for review,
 // and STOP at the admin-approval station. NEVER calls Bookpod here — the owner's
 // manual "approve & send to print" click is the only path to Bookpod.
@@ -1439,15 +1510,16 @@ async function registerPrintOrder(bookId, orderId, format, payload) {
   // Insert FIRST (status=awaiting_admin_approval). Dedup net #2 = UNIQUE(shopify_order_id).
   const rec = await insertPrintOrder({ bookId, shopifyOrderId: orderId, format, shipping });
   if (!rec) { console.log(`[print] order ${orderId} lost insert race — skipping`); return; }
-  console.log(`[print] registered order ${orderId} (${format}) — generating PDFs...`);
+  console.log(`[print] registered order ${orderId} (${format}) — waiting for the book to finish generating...`);
 
+  // The customer can pay while generate-full is still running. Never start the
+  // print run on a half-written book — it wastes upscaling credits and dies.
+  const ready = await waitForBookPrintReady(bookId, { label: `order ${orderId}: ` });
+  if (!ready) return;   // reason already logged; row stays for the retry button
+
+  console.log(`[print] order ${orderId}: generating PDFs...`);
   try {
-    const { gen } = await loadPrintModules();
-    const content = await gen.generatePrintPDF(bookId, {});
-    const cover   = await gen.generateCoverPDF(bookId, {});
-    const contentPdfUrl = await uploadPdfToStorage(bookId, "content", content.outputPath);
-    const coverPdfUrl   = await uploadPdfToStorage(bookId, "cover",   cover.outputPath);
-    await updatePrintOrder(rec.id, { contentPdfUrl, coverPdfUrl });
+    const { contentPdfUrl, coverPdfUrl } = await generateAndStorePrintPdfs(rec);
     console.log(`[print] order ${orderId}: PDFs ready — content=${contentPdfUrl} cover=${coverPdfUrl} (awaiting admin approval)`);
   } catch (err) {
     console.error(`[print] order ${orderId}: PDF generation failed — ${err.message}. Row kept for manual retry.`);
@@ -2976,6 +3048,58 @@ app.get("/api/admin/print-orders", requireAdminAuth, async (req, res) => {
   }
 });
 
+// ─── Admin: Print orders — (re)generate the two PDFs ──────────────────────────
+// Guards against a double click starting two concurrent runs for the same order.
+const printPdfJobsInFlight = new Set();
+
+// Retry path for a row whose PDFs are missing (book was still generating when the
+// webhook landed, a transient Storage error, etc). NEVER touches Bookpod.
+app.post("/api/admin/print-orders/:id/generate-pdfs", requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const order = await getPrintOrderById(id);
+    if (!order) return res.status(404).json({ error: "Print order not found" });
+    if (order.status !== "awaiting_admin_approval") {
+      return res.status(409).json({ error: `Order is not awaiting approval (status=${order.status})` });
+    }
+
+    // Report an unfinished book as a clear 409 instead of burning upscaling credits.
+    const readiness = await readPrintReadiness(order.bookId);
+    if (!readiness.found) return res.status(404).json({ error: `Book ${order.bookId} not found` });
+    if (!readiness.ready) {
+      return res.status(409).json({
+        error: `הספר עדיין לא מוכן להפקה — ${readiness.have} מתוך ${readiness.need} איורים` +
+               `${readiness.hasCover ? "" : ", והכריכה חסרה"}. נסי שוב בעוד כמה דקות.`
+      });
+    }
+
+    if (printPdfJobsInFlight.has(String(id))) {
+      return res.status(409).json({ error: "ההפקה של ההזמנה הזו כבר רצה — המתיני לסיומה." });
+    }
+
+    // Generation takes minutes — answer now and work in the background (same
+    // pattern as generate-full), so no proxy timeout can kill the run midway.
+    printPdfJobsInFlight.add(String(id));
+    res.status(202).json({ status: "started" });
+
+    (async () => {
+      try {
+        console.log(`[admin] print order ${id} (book ${order.bookId}): generating PDFs on request...`);
+        const { contentPdfUrl, coverPdfUrl } = await generateAndStorePrintPdfs(order);
+        console.log(`[admin] print order ${id}: PDFs ready — content=${contentPdfUrl} cover=${coverPdfUrl}`);
+      } catch (err) {
+        console.error(`[admin] generate-pdfs for print order ${id} FAILED: ${err.message}`);
+      } finally {
+        printPdfJobsInFlight.delete(String(id));
+      }
+    })();
+  } catch (err) {
+    printPdfJobsInFlight.delete(String(id));
+    console.error(`[admin] generate-pdfs for print order ${id} FAILED:`, err.message);
+    if (!res.headersSent) return res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Admin: Print orders — approve & send to print ────────────────────────────
 // !! CONSUMES PRE-PAID BOOKPOD CREDITS + TRIGGERS PHYSICAL PRINTING/SHIPPING !!
 // This is the ONLY path that reaches Bookpod. The webhook never does. It runs the
@@ -2995,14 +3119,23 @@ app.post("/api/admin/print-orders/:id/approve", requireAdminAuth, async (req, re
       return res.status(400).json({ error: "Order is missing shipping name/address/city — cannot send to print" });
     }
 
-    const { gen, bookpod } = await loadPrintModules();
+    // WHAT THE OWNER APPROVED IS WHAT GETS PRINTED. We send the exact PDFs she
+    // reviewed in the station — downloaded back from Storage — and never re-render
+    // here. Missing files are a hard stop: she uses "generate PDFs" and reviews first.
+    if (!order.contentPdfUrl || !order.coverPdfUrl) {
+      return res.status(409).json({
+        error: "אין קבצים מאושרים להזמנה הזו — לחצי קודם על \"הפק קבצים\", בדקי אותם, ורק אז אשרי לדפוס."
+      });
+    }
 
-    console.log(`[admin] approve print order ${id} (book ${order.bookId}): generating PDFs...`);
-    const content = await gen.generatePrintPDF(order.bookId, {});
-    const cover   = await gen.generateCoverPDF(order.bookId, {});
+    const { bookpod } = await loadPrintModules();
+
+    console.log(`[admin] approve print order ${id} (book ${order.bookId}): downloading the approved PDFs...`);
+    const contentPath = await downloadPdfToTemp(order.contentPdfUrl, `${order.bookId}-content.pdf`);
+    const coverPath   = await downloadPdfToTemp(order.coverPdfUrl,   `${order.bookId}-cover.pdf`);
 
     console.log(`[admin] approve print order ${id}: creating Bookpod draft...`);
-    const bookpodBookId = await bookpod.createBook(order.bookId, content.outputPath, cover.outputPath);
+    const bookpodBookId = await bookpod.createBook(order.bookId, contentPath, coverPath);
 
     console.log(`[admin] approve print order ${id}: !! placing REAL Bookpod order — consuming credits !!`);
     const bpOrder = await bookpod.createOrder(String(bookpodBookId), shipping, order.bookId);

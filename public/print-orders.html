@@ -72,6 +72,13 @@
     }
     .approve-btn:hover { filter:brightness(1.1); }
     .approve-btn:disabled { opacity:0.5; cursor:default; filter:none; }
+    .genpdf-btn {
+      background:transparent; border:1px solid var(--gold); color:var(--gold); border-radius:8px;
+      padding:12px 22px; font-family:inherit; font-size:0.95rem; font-weight:600; cursor:pointer;
+      margin-left:10px;
+    }
+    .genpdf-btn:hover { background:#fdf3de; }
+    .genpdf-btn:disabled { opacity:0.5; cursor:default; background:transparent; }
     .order-result { margin-top:12px; font-size:0.9rem; min-height:20px; }
     .order-result.ok  { color:#1e7a3c; }
     .order-result.err { color:#c0392b; }
@@ -218,6 +225,8 @@ function renderOrders(orders) {
     const coverLink = o.coverPdfUrl
       ? `<a href="${o.coverPdfUrl}" target="_blank">📕 קובץ כריכה</a>`
       : `<span class="missing">קובץ כריכה חסר</span>`;
+    // Approval sends the reviewed files as-is, so it stays locked until both exist.
+    const hasPdfs = !!(o.contentPdfUrl && o.coverPdfUrl);
 
     card.innerHTML = `
       <div class="order-head">
@@ -227,20 +236,77 @@ function renderOrders(orders) {
       <div class="order-date">${dateStr}</div>
       <div class="order-ship">${shipLines || "— אין פרטי משלוח —"}</div>
       <div class="order-links">${contentLink}${coverLink}</div>
-      <button class="approve-btn" data-id="${o.id}">אשר ושלח לדפוס</button>
-      <div class="order-result" id="result-${o.id}"></div>
+      <button class="approve-btn" data-id="${o.id}"${hasPdfs ? "" : " disabled"}>אשר ושלח לדפוס</button>
+      ${hasPdfs ? "" : `<button class="genpdf-btn" data-id="${o.id}">הפק קבצים</button>`}
+      <div class="order-result" id="result-${o.id}">${hasPdfs ? "" : "יש להפיק את הקבצים ולבדוק אותם לפני האישור"}</div>
     `;
 
     const btn = card.querySelector(".approve-btn");
     btn.addEventListener("click", () => approveOrder(o, btn));
+    const genBtn = card.querySelector(".genpdf-btn");
+    if (genBtn) genBtn.addEventListener("click", () => generatePdfs(o, genBtn));
     list.appendChild(card);
   });
+}
+
+// Produces the two print PDFs for an order whose files are missing.
+// Never reaches Bookpod — the owner still reviews and approves afterwards.
+async function generatePdfs(order, btn) {
+  const resultEl = document.getElementById("result-" + order.id);
+  btn.disabled = true;
+  resultEl.className = "order-result";
+  resultEl.textContent = "מפיק קבצים... (יכול לקחת כמה דקות — אל תסגרי את הדף)";
+  try {
+    const res  = await apiFetch(`/api/admin/print-orders/${order.id}/generate-pdfs`, { method: "POST" });
+    if (res.status === 401) { handleExpiredToken(); return; }
+    const data = await res.json();
+    if (!res.ok) {
+      resultEl.className = "order-result err";
+      resultEl.textContent = "שגיאה: " + (data.error || "ההפקה נכשלה");
+      btn.disabled = false;
+      return;
+    }
+    // Generation runs in the background — poll until both files show up.
+    pollForPdfs(order.id, resultEl, btn);
+  } catch {
+    resultEl.className = "order-result err";
+    resultEl.textContent = "שגיאת רשת — נסי שוב";
+    btn.disabled = false;
+  }
+}
+
+// Poll the orders list until the two PDFs exist (or ~12 minutes pass).
+function pollForPdfs(orderId, resultEl, btn) {
+  const deadline = Date.now() + 12 * 60 * 1000;
+  const tick = async () => {
+    try {
+      const res = await apiFetch("/api/admin/print-orders");
+      if (res.status === 401) { handleExpiredToken(); return; }
+      const data = await res.json();
+      const o = (data.orders || []).find(x => String(x.id) === String(orderId));
+      if (o && o.contentPdfUrl && o.coverPdfUrl) {
+        resultEl.className = "order-result ok";
+        resultEl.textContent = "✅ הקבצים הופקו — בדקי אותם לפני האישור";
+        setTimeout(loadOrders, 800);
+        return;
+      }
+    } catch { /* transient — keep polling */ }
+    if (Date.now() > deadline) {
+      resultEl.className = "order-result err";
+      resultEl.textContent = "ההפקה לא הסתיימה בזמן — בדקי את יומן השרת ונסי שוב";
+      btn.disabled = false;
+      return;
+    }
+    setTimeout(tick, 10000);
+  };
+  setTimeout(tick, 10000);
 }
 
 async function approveOrder(order, btn) {
   const resultEl = document.getElementById("result-" + order.id);
   const ok = window.confirm(
     `לשלוח לדפוס את הספר של ${order.childName || "הלקוח"}?\n` +
+    `יישלחו לבוקפוד בדיוק שני הקבצים שבדקת, ללא ייצור מחדש.\n` +
     `פעולה זו יוצרת הזמנה אמיתית בבוקפוד ומנצלת קרדיט.`
   );
   if (!ok) return;

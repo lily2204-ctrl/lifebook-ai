@@ -1706,6 +1706,10 @@ async function generatePrintPDF(bookId, options = {}) {
   // ── STEP 2: Load images as Buffers ─────────────────────────────────────────
   console.log(`[print-pdf] STEP 2: loading images...`);
   const pageBuffers = [];
+  // Per-page reason why an illustration could not be loaded. Feeds the readiness
+  // gate below so a failure names the exact page AND the exact cause.
+  const missingReasons = {};
+  const dbImageCount = (book.fullImages || []).filter(Boolean).length;
   for (let i = 0; i < pilotPages; i++) {
     // If all downstream cached files exist, skip Storage fetch entirely
     const cachedUpscaled   = path.join(debugDir, `page-${i}-upscaled.png`);
@@ -1716,21 +1720,57 @@ async function generatePrintPDF(bookId, options = {}) {
       pageBuffers.push(null); // not needed — STEP 3 will use cache
       continue;
     }
+    const imageRef = book.fullImages[i] || null;
     let buf = null;
-    try {
-      buf = await toBuffer(book.fullImages[i] || null);
-    } catch (e) {
-      console.warn(`[print-pdf] STEP 2: page ${i} Storage fetch failed (${e.message})`);
+    if (!imageRef) {
+      missingReasons[i] = `no image URL in the book record (full_images holds ${dbImageCount} of ${pilotPages} illustrations) — the digital generation pipeline has most likely not written this page yet`;
+    } else {
+      try {
+        buf = await toBuffer(imageRef);
+        if (!buf) missingReasons[i] = `image reference present but unreadable (not a URL and not valid base64)`;
+      } catch (e) {
+        missingReasons[i] = `fetch from Storage failed — ${e.message}`;
+        console.warn(`[print-pdf] STEP 2: page ${i} Storage fetch failed (${e.message})`);
+      }
     }
     if (!buf && fs.existsSync(cachedOriginal)) {
       buf = fs.readFileSync(cachedOriginal);
+      delete missingReasons[i];
       console.log(`[print-pdf] STEP 2: page ${i} → loaded from debug cache`);
     }
-    if (!buf) console.warn(`[print-pdf] STEP 2: page ${i} image missing`);
+    if (!buf) console.warn(`[print-pdf] STEP 2: page ${i} image missing — ${missingReasons[i]}`);
     else      saveDebug(debugDir, `page-${i}-original.jpg`, buf);
     pageBuffers.push(buf);
   }
   console.log(`[print-pdf] STEP 2 done — ${pageBuffers.filter(Boolean).length}/${pilotPages} page images loaded ${elapsed(globalStart)}`);
+
+  // ── READINESS GATE ───────────────────────────────────────────────────────────
+  // Fail here — BEFORE the first paid step (STEP 4 upscaling) — with a message that
+  // names every missing page and why. Historically the run limped on and died with an
+  // opaque "page N has no wide image" in STEP 5, after money had already been spent on
+  // the pages that did load. Root cause seen in production (order 7255021748470): the
+  // orders/paid webhook fired ~40s before the digital pipeline finished writing the
+  // last page images, so the print run read a half-written book.
+  // A page is satisfied by exactly what STEP 3 can consume: a freshly loaded buffer,
+  // a cached square crop, or a cached original on disk.
+  const missingPages = [];
+  for (let i = 0; i < pilotPages; i++) {
+    const usable = !!pageBuffers[i]
+      || fs.existsSync(path.join(debugDir, `page-${i}-wide.jpg`))
+      || fs.existsSync(path.join(debugDir, `page-${i}-original.jpg`));
+    if (!usable) missingPages.push(i);
+  }
+  if (missingPages.length) {
+    const detail = missingPages
+      .map(i => `  · page ${i}: ${missingReasons[i] || 'illustration unavailable'}`)
+      .join('\n');
+    throw new Error(
+      `[print-pdf] Book ${bookId} ("${book.childName || 'unknown child'}") is NOT ready for print — ` +
+      `${missingPages.length} of ${pilotPages} illustrations unavailable.\n` +
+      `Missing pages (0-based): ${missingPages.join(', ')}\n${detail}\n` +
+      `Nothing was generated and $0.00 was spent. Retry once the book is complete.`
+    );
+  }
 
   // Load reference photo and character description for wide spread generation
   const charRef = book.characterReference || {};
@@ -1845,7 +1885,11 @@ async function generatePrintPDF(bookId, options = {}) {
   const spreads    = [];
 
   for (let i = 0; i < pilotPages; i++) {
-    if (!wideBuffers[i]) throw new Error(`[print-pdf] STEP 5: page ${i} has no wide image`);
+    // Safety net — the STEP 2 readiness gate should already have caught this.
+    if (!wideBuffers[i]) throw new Error(
+      `[print-pdf] STEP 5: page ${i} of book ${bookId} ("${book.childName || 'unknown child'}") has no square ` +
+      `illustration to assemble — ${missingReasons[i] || 'the source illustration could not be prepared in STEP 3'}`
+    );
     const { loadImage } = require('canvas');
     const PX = PRINT_PX;
 
