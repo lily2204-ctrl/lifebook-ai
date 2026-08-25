@@ -194,6 +194,24 @@
           <img id="coverImage" alt="Book cover" onload="this.style.display='block';document.getElementById('coverPlaceholder').style.display='none'"/>
         </div>
       </div>
+
+      <!-- Cover + first illustrations status. The loading screen with its step
+           tracker is already hidden by this point — the preview opens as soon as
+           the story is written — so without this strip the customer waits for the
+           cover and the first two pages with nothing on screen telling them so.
+           It sits directly under the cover it is describing, and NOT further down
+           beside the page cards: there it rendered ~1100px below the fold, so the
+           customer had to scroll to find the reassurance they were waiting for. -->
+      <div id="genStatus" style="display:none;margin:14px auto 0;max-width:420px;padding:12px 16px;background:linear-gradient(135deg,#fff8ed,#fdf3dc);border:1px solid var(--gold-pale);border-radius:12px;text-align:center;">
+        <div style="display:flex;align-items:center;justify-content:center;gap:9px;">
+          <div class="mini-spin2"></div>
+          <div style="font-size:14px;font-weight:700;color:var(--brown);" id="genStatusText">יוצרים את הכריכה...</div>
+        </div>
+        <div style="font-size:12px;color:#9b8060;margin-top:5px;" id="genStatusEta">בערך דקה־שתיים</div>
+        <div style="height:5px;background:rgba(200,146,42,0.1);border-radius:4px;margin-top:8px;overflow:hidden;">
+          <div id="genStatusBar" style="height:100%;background:linear-gradient(90deg,var(--gold-light),var(--gold));border-radius:4px;transition:width 0.6s ease;width:0%;"></div>
+        </div>
+      </div>
     </div>
 
     <div class="content-panel">
@@ -208,21 +226,6 @@
       </div>
 
       <div class="pages-wrap" id="pagesWrap"></div>
-
-      <!-- Cover + first illustrations status. The loading screen with its step
-           tracker is already hidden by this point — the preview opens as soon as
-           the story is written — so without this strip the customer waits for the
-           cover and the first two pages with nothing on screen telling them so. -->
-      <div id="genStatus" style="display:none;margin:12px 0;padding:12px 16px;background:linear-gradient(135deg,#fff8ed,#fdf3dc);border:1px solid var(--gold-pale);border-radius:12px;text-align:center;">
-        <div style="display:flex;align-items:center;justify-content:center;gap:9px;">
-          <div class="mini-spin2"></div>
-          <div style="font-size:14px;font-weight:700;color:var(--brown);" id="genStatusText">יוצרים את הכריכה...</div>
-        </div>
-        <div style="font-size:12px;color:#9b8060;margin-top:5px;" id="genStatusEta">בערך דקה־שתיים</div>
-        <div style="height:5px;background:rgba(200,146,42,0.1);border-radius:4px;margin-top:8px;overflow:hidden;">
-          <div id="genStatusBar" style="height:100%;background:linear-gradient(90deg,var(--gold-light),var(--gold));border-radius:4px;transition:width 0.6s ease;width:0%;"></div>
-        </div>
-      </div>
 
       <!-- Live progress counter -->
       <div id="imgProgress" style="display:none;margin:12px 0;padding:12px 16px;background:linear-gradient(135deg,#fff8ed,#fdf3dc);border:1px solid var(--gold-pale);border-radius:12px;text-align:center;">
