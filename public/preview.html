@@ -209,6 +209,21 @@
 
       <div class="pages-wrap" id="pagesWrap"></div>
 
+      <!-- Cover + first illustrations status. The loading screen with its step
+           tracker is already hidden by this point — the preview opens as soon as
+           the story is written — so without this strip the customer waits for the
+           cover and the first two pages with nothing on screen telling them so. -->
+      <div id="genStatus" style="display:none;margin:12px 0;padding:12px 16px;background:linear-gradient(135deg,#fff8ed,#fdf3dc);border:1px solid var(--gold-pale);border-radius:12px;text-align:center;">
+        <div style="display:flex;align-items:center;justify-content:center;gap:9px;">
+          <div class="mini-spin2"></div>
+          <div style="font-size:14px;font-weight:700;color:var(--brown);" id="genStatusText">יוצרים את הכריכה...</div>
+        </div>
+        <div style="font-size:12px;color:#9b8060;margin-top:5px;" id="genStatusEta">בערך דקה־שתיים</div>
+        <div style="height:5px;background:rgba(200,146,42,0.1);border-radius:4px;margin-top:8px;overflow:hidden;">
+          <div id="genStatusBar" style="height:100%;background:linear-gradient(90deg,var(--gold-light),var(--gold));border-radius:4px;transition:width 0.6s ease;width:0%;"></div>
+        </div>
+      </div>
+
       <!-- Live progress counter -->
       <div id="imgProgress" style="display:none;margin:12px 0;padding:12px 16px;background:linear-gradient(135deg,#fff8ed,#fdf3dc);border:1px solid var(--gold-pale);border-radius:12px;text-align:center;">
         <div style="font-size:14px;font-weight:700;color:var(--brown);" id="imgProgressText">✨ 0/12 pages illustrated</div>
@@ -243,6 +258,15 @@ var bookSubtitleEl= document.getElementById("bookSubtitle");
 var pagesWrap     = document.getElementById("pagesWrap");
 var payBtn        = document.getElementById("payBtn");
 var stillGen      = document.getElementById("stillGen");
+
+// i18n with a guaranteed Hebrew fallback. i18nT returns the key itself when a
+// string is missing, which would print "genCover" at the customer; this keeps
+// real words on screen no matter what the dictionary contains.
+function t(key, fallback) {
+  if (typeof i18nT !== 'function') return fallback;
+  var v = i18nT(key);
+  return (!v || v === key) ? fallback : v;
+}
 
 var steps = [
   document.getElementById("lstep1"),
@@ -362,6 +386,31 @@ async function pollBook() {
       }
 
       if (previewShown) updateLiveImages(b);
+
+      // Tell the customer what is being made right now. Read-only — it reflects
+      // the same flags the step tracker uses and never drives generation.
+      if (previewShown) {
+        var gs = document.getElementById('genStatus');
+        var gsText = document.getElementById('genStatusText');
+        var gsEta  = document.getElementById('genStatusEta');
+        var gsBar  = document.getElementById('genStatusBar');
+        if (gs && !(hasCover && has2Imgs)) {
+          gs.style.display = 'block';
+          var stage = !hasCover ? 'cover' : (!has2Imgs ? 'pages' : 'done');
+          if (stage === 'cover') {
+            gsText.textContent = t('genCover', 'יוצרים את הכריכה...');
+            gsEta.textContent  = t('genCoverEta', 'בערך דקה־שתיים');
+            gsBar.style.width  = '35%';
+          } else {
+            var n = b.fullImages ? b.fullImages.filter(Boolean).length : 0;
+            gsText.textContent = t('genPages', 'מאיירים את העמודים הראשונים...');
+            gsEta.textContent  = t('genPagesEta', 'עוד פחות מדקה') + ' · ' + n + '/2';
+            gsBar.style.width  = (60 + n * 20) + '%';
+          }
+        } else if (gs) {
+          gs.style.display = 'none';
+        }
+      }
 
       // Update progress counter
       var totalPages = (b.generatedBook && b.generatedBook.pages) ? b.generatedBook.pages.length : 12;

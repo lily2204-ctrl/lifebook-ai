@@ -85,6 +85,10 @@ const I18N = {
     // Status / loading
     statusCreating: 'יוצר את הספר שלכם...',
     stepCover: 'יוצרים את הכריכה...',
+    genCover: 'יוצרים את הכריכה...',
+    genCoverEta: 'בערך דקה־שתיים',
+    genPages: 'מאיירים את העמודים הראשונים...',
+    genPagesEta: 'עוד פחות מדקה',
     statusSaving: 'שומר על השרת...',
     statusStarting: 'מתחיל ביצירה...',
     statusRedirecting: 'מעביר...',
@@ -345,6 +349,10 @@ const I18N = {
     // Status / loading
     statusCreating: 'Creating your book...',
     stepCover: 'Creating the cover...',
+    genCover: 'Creating the cover...',
+    genCoverEta: 'About a minute or two',
+    genPages: 'Illustrating the first pages...',
+    genPagesEta: 'Under a minute to go',
     statusSaving: 'Saving to server...',
     statusStarting: 'Starting generation...',
     statusRedirecting: 'Redirecting...',
