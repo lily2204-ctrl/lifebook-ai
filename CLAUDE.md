@@ -116,8 +116,9 @@ STEP 5: sendBookReadyEmail ONLY if purchaseUnlocked === true
 ## Print PDF Track — branch `feature/print-pdf`
 **Full spec: LIFEBOOK_SPEC.md §3. Zero impact on the digital pipeline — all print code in separate module files.**
 - Supplier: Bookpod (bookpod.co.il), print-on-demand, API + pre-paid credits.
-- Content file: single pages in sequence, trim 22×22 cm, bleed exactly 3.2 mm (page 22.64×22.64), 300DPI, flat file, no page numbers, no digital-viewer elements. 28 pages exactly (divisible by 4). Hebrew binding: first page on the LEFT when opened.
-- Spread = "Option A": illustration page (original image expanded to 1:1 via outpainting — NEVER cropped, never lose heads/details) + text page (background-continuation outpaint under Hebrew RTL text).
+- Content file: single pages in sequence, trim **19×28.5 cm (exact 2:3, portrait)**, bleed exactly 3.2 mm (page 19.64×29.14 cm = 2320×3442px @300DPI), flat file, no page numbers, no digital-viewer elements. 28 pages exactly (divisible by 4). Hebrew binding: first page on the LEFT when opened. Confirmed with Bookpod 2026-08-24 — same price as the retired 22×22 square.
+- Spread: illustration page = the digital 1024×1536 image at full page, **no content crop** (image and page are both 2:3; effective crop 1.09%, caused by the bleed alone) + text page (tonal vignette under Hebrew RTL text).
+- **Retired 2026-08-24 and must not return**: the square-as-canvas contract, the two-thirds composition rule, `smartSquareCropUp` / `coverCropToSquare` in the live path, and the paid cover outpaint. See LIFEBOOK_SPEC.md §3 "היסטוריה".
 - Upscaling via Replicate Real-ESRGAN before assembly. Images embedded as JPEG q85–90; target file < 80MB.
 - Intermediates saved to `print-pdf/debug/`. Output in `print-pdf/output/`.
 - Cover: SEPARATE flat file (back + spine + front) — NOT implemented yet; waiting on Bookpod paper spec. TODO stub only.
