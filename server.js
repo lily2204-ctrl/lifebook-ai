@@ -10,6 +10,7 @@ import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
 import bcrypt from "bcryptjs";
 import jwt    from "jsonwebtoken";
+import { scoreImagePrompts } from "./composition-gate.js";
 
 // ── Feature flag: image-to-image identity pipeline ───────────────────────────
 // Set to true to use openai.images.edit (identity-preserving) instead of .generate.
@@ -56,7 +57,15 @@ const STYLE_LOCK = {
     "NOT 3D, NOT photorealistic, NOT a photo." +
     " Absolutely NO text, NO letters, NO words, NO writing, NO signs with writing, NO labels, NO logos anywhere in the illustration. Any signs, books or papers in the scene must be blank.",
   soft3d:
-    "Transform this into a 3D rendered animated character. " +
+    // Opens on the SCENE, not on the child. "Transform this into a character"
+    // read as an instruction to convert the reference portrait into a figure,
+    // which pulled almost every page toward a portrait crop regardless of the
+    // framing the story asked for. Measured on a 12-page test book against an
+    // otherwise identical control: framing compliance 8/12 → 9/12, with no
+    // change to character identity. See LIFEBOOK_SPEC.md §3 "היסטוריה".
+    "Illustrate the scene described below as a frame from a high-quality 3D animated movie. " +
+    "The child described in the reference appears within the scene; the scene, not the child, " +
+    "decides the framing. " +
     "Glossy smooth 3D surfaces, big expressive eyes, soft cinematic studio lighting, " +
     "subsurface scattering on the skin, depth of field, looks like a frame from a " +
     "high-quality animated movie. NOT a painting, NOT watercolor, NOT a photo. " +
@@ -1927,7 +1936,7 @@ app.post("/api/books/:bookId/generate-full", async (req, res) => {
         if (mode !== 'template') {
           console.log(`generate-full [${bookId}]: STEP 2 mode=custom`);
           const writingRules = `כללי כתיבה חשובים:\n- בדיוק 12 עמודים — לא פחות, לא יותר.\n- כל עמוד: לפחות 2–3 משפטים. אסור לכתוב משפט יחיד.\n- התאם לגיל ${childAge}: ילד צעיר (עד 4) — לפחות 2–3 משפטים, קצרים וקצביים עם חזרות (קצרים, אך לא פחות משניים); ילד מבוגר יותר (5+) — עושר רגשי ומילולי רב יותר.\n- כתוב מה הילד מרגיש וחושב — לא רק מה שקורה. הטקסט חי ורגשי.\n- השתמש בשפה חמה, קצבית, ילדותית — שאלות, קריאות, חזרות מוזיקליות.\n- שם הילד מופיע באופן טבעי לאורך הסיפור — לא בכל משפט, לא רק בהתחלה.\n- אין מוסר השכל מפורש. אין נאומים. הרגש עולה מהסיפור עצמו.`;
-          storyPrompt = `You are a premium personalized children's book writer.\n\n${writingRules}\n\nChild name: ${sanitizeBrandTerms(childName)}\nChild age: ${childAge}\nChild gender: ${childGender}\nStory direction: ${sanitizeBrandTerms(storyIdea)}\nIllustration style: ${safeStyle}\n\nCharacter summary:\n${sanitizeBrandTerms(characterSummary)}\n\nCharacter consistency instructions:\n${sanitizeBrandTerms(promptCore)}\n\nReturn ONLY JSON:\n{\n  "title": "string",\n  "subtitle": "string",\n  "pages": [\n    {\n      "text": "string",\n      "imagePrompt": "string"\n    }\n  ]\n}\n\nRules:\n- Exactly 12 story pages\n- Each page text must be 35-70 words\n- The child must clearly be the hero\n- imagePrompt must describe the same illustrated storybook character consistently across all pages — same face, hair, and features in every scene. Never use "the child", "boy", or "girl" — instead use "the young storybook hero" (for a boy) or "the young storybook heroine" (for a girl). Always describe an illustrated character, never a real person or photograph.\n- No page numbers inside text\n- No brand names\n- Do not mention copyrighted characters or logos\n- Language: ${bookLanguage === "en" ? "Write the ENTIRE story in English only." : 'כתוב את כל הסיפור בעברית בלבד — ללא מילים באנגלית (למשל: כתוב "התרגשות" ולא "excitement!"). שמות פרטיים אפשר לשמור באותיות לטיניות.'} Keep imagePrompt always in English for image generation.`;
+          storyPrompt = `You are a premium personalized children's book writer.\n\n${writingRules}\n\nChild name: ${sanitizeBrandTerms(childName)}\nChild age: ${childAge}\nChild gender: ${childGender}\nStory direction: ${sanitizeBrandTerms(storyIdea)}\nIllustration style: ${safeStyle}\n\nCharacter summary:\n${sanitizeBrandTerms(characterSummary)}\n\nCharacter consistency instructions:\n${sanitizeBrandTerms(promptCore)}\n\nReturn ONLY JSON:\n{\n  "title": "string",\n  "subtitle": "string",\n  "pages": [\n    {\n      "text": "string",\n      "imagePrompt": "string"\n    }\n  ]\n}\n\nRules:\n- Exactly 12 story pages\n- Each page text must be 35-70 words\n- The child must clearly be the hero\n- imagePrompt must describe the same illustrated storybook character consistently across all pages — same face, hair, and features in every scene. Never use "the child", "boy", or "girl" — instead use "the young storybook hero" (for a boy) or "the young storybook heroine" (for a girl). Always describe an illustrated character, never a real person or photograph.\n- Each imagePrompt must be written FROM THAT PAGE'S OWN TEXT. Name the specific action happening in that page's sentences, the place it happens, every object and prop the text mentions, and every other character present (animals, friends, family) with a brief visual description. If an imagePrompt could be swapped with another page's imagePrompt without anyone noticing, it is wrong — rewrite it.\n- Vary the camera across the twelve pages. Begin every imagePrompt with exactly one of these framings: "Wide establishing shot", "Full-body shot", "Medium shot", or "Close-up". Across the twelve pages use "Wide establishing shot" at least three times, "Full-body shot" at least three times, and "Close-up" no more than twice. Choose the framing that the page's own moment calls for — a quiet bedtime page, a running page, and a group page must not be framed alike.\n- No page numbers inside text\n- No brand names\n- Do not mention copyrighted characters or logos\n- Language: ${bookLanguage === "en" ? "Write the ENTIRE story in English only." : 'כתוב את כל הסיפור בעברית בלבד — ללא מילים באנגלית (למשל: כתוב "התרגשות" ולא "excitement!"). שמות פרטיים אפשר לשמור באותיות לטיניות.'} Keep imagePrompt always in English for image generation.`;
         }
 
         // ── OpenAI call (identical for both modes) — up to 2 retries if <12 pages ──
@@ -1977,6 +1986,13 @@ app.post("/api/books/:bookId/generate-full", async (req, res) => {
           await updateBookField(bookId, { generatedBook });
           console.log(`generate-full [${bookId}]: STEP 2 done — ${generatedBook.pages.length} pages`);
           console.log(`generate-full [${bookId}]: STEP 2 imagePrompts —`, JSON.stringify(generatedBook.pages.map((p, i) => ({ i, imagePrompt: p.imagePrompt }))));
+
+          // Scene + framing gate. Reports only — it never blocks, retries, or
+          // changes a customer's book. A FAIL here is a signal to the owner that
+          // the writer drifted back to one template for twelve pages.
+          const promptCheck = scoreImagePrompts(generatedBook.pages);
+          console.log(`generate-full [${bookId}]: GATE prompts ${promptCheck.honoured ? "PASS" : "FAIL"} — framings ${JSON.stringify(promptCheck.counts)}, worst overlap ${(promptCheck.worstOverlap * 100).toFixed(0)}%`);
+          promptCheck.reasons.forEach(r => console.warn(`generate-full [${bookId}]: GATE prompts — ${r}`));
         } catch (err) {
           console.error(`generate-full [${bookId}]: STEP 2 FAILED — ${err.message}`);
           const fallbackBook = {
@@ -2053,7 +2069,7 @@ app.post("/api/books/:bookId/generate-full", async (req, res) => {
       // ── Old text-to-image function (unchanged, used when useEditPipeline=false) ──
       async function generatePageImage(pageIndex) {
         const page = pages[pageIndex];
-        const imgPrompt = `Create a premium children's storybook illustration.\n\nIllustration style: ${safeStyle}\n\nCharacter consistency:\n${sanitizeBrandTerms(promptCore)}\n\nScene:\n${sanitizeImagePrompt(page.imagePrompt || "")}\n\nRules:\n- same child identity in this scene as in all other illustrations\n- same face structure, hair color, skin tone, and eye color — no variation\n- warm magical storybook aesthetic\n- COMPOSITION SAFE ZONE: place ALL characters and every important story element in the TOP two-thirds of the frame; the bottom third must contain only ground, scenery, or soft atmosphere — no character, face, hands, or important object there — so the image can be cropped to the top square without losing anyone or anything\n- keep the lower third of the composition calmer and less visually busy, with a simpler or softer background — this area is reserved for text overlay\n- NO text, letters, words, numbers, or writing of any kind rendered inside the image\n- NO captions, labels, titles, or speech bubbles\n- no watermark\n- elegant composition\n- no logos\n- no brand names\n- no copyrighted costume emblems`;
+        const imgPrompt = `Create a premium children's storybook illustration.\n\nIllustration style: ${safeStyle}\n\nCharacter consistency:\n${sanitizeBrandTerms(promptCore)}\n\nScene:\n${sanitizeImagePrompt(page.imagePrompt || "")}\n\nRules:\n- same child identity in this scene as in all other illustrations\n- same face structure, hair color, skin tone, and eye color — no variation\n- warm magical storybook aesthetic\n- compose the frame freely — the scene may use the full height of the portrait; there is no reserved empty area and no crop to protect against\n- every character's full head, hair, and shoulders visible with clear space above — never cropped at the top\n- NO text, letters, words, numbers, or writing of any kind rendered inside the image\n- NO captions, labels, titles, or speech bubbles\n- no watermark\n- elegant composition\n- no logos\n- no brand names\n- no copyrighted costume emblems`;
         const imgResp = await openai.images.generate({ model: "gpt-image-2", prompt: imgPrompt, size: "1024x1536", quality: "high" });
         return await normalizeImageToBase64(imgResp?.data?.[0]);
       }
@@ -2120,7 +2136,7 @@ app.post("/api/books/:bookId/generate-full", async (req, res) => {
             ? ` Family members share the child's ${skinToneDescription}.`
             : "";
           // V2 (image-edit): reference photo is the sole source of child identity — no promptCore text needed.
-          const scenePrompt = `${styleLock} ${scene}${bibleHint || skinToneHint} Portrait orientation. COMPOSITION SAFE ZONE: place ALL characters and every important story element in the TOP two-thirds of the frame. The bottom third must contain only ground, scenery, or soft atmosphere — no character, no face, no hands, and no important object there — so the image can be cropped to the top square without losing anyone or anything. Character fully centered vertically — full head, hair, and shoulders visible with clear space above; never cropped at the top. No English text or signs; any visible signage should be blank or in Hebrew. Keep the lower third of the composition calmer and less visually busy with a simpler background — this area is reserved for text overlay. NO text, letters, words, numbers, captions, labels, titles, watermarks, logos, or speech bubbles inside the image.`;
+          const scenePrompt = `${styleLock} ${scene}${bibleHint || skinToneHint} Portrait orientation. Compose the frame freely — the scene may use the full height of the portrait. Every character's full head, hair, and shoulders visible with clear space above; never cropped at the top. No English text or signs; any visible signage should be blank or in Hebrew. NO text, letters, words, numbers, captions, labels, titles, watermarks, logos, or speech bubbles inside the image.`;
           // Single attempt here — outer generatePageImageWithRetry provides the retry loop.
           // Previously called generatePageImageWithRetryV2 which had its own 3-attempt loop,
           // causing up to 9 total API calls per page and severe speed regression.
@@ -2163,13 +2179,13 @@ app.post("/api/books/:bookId/generate-full", async (req, res) => {
       if (useEditPipeline) {
         const coverScene = `The child stands as the hero on the cover of a children's storybook. Magical scene inspired by: ${sanitizeBrandTerms(storyIdea)}. Beautiful cover composition, full portrait, warm magical atmosphere. No character sheet, no multiple poses.`;
         // V2 (image-edit): reference photo is the sole source of child identity — no promptCore text needed.
-        const coverScenePrompt = `${styleLock} ${coverScene} Portrait orientation. COMPOSITION SAFE ZONE: place ALL characters and every important story element in the TOP two-thirds of the frame. The bottom third must contain only ground, scenery, or soft atmosphere — no character, no face, no hands, and no important object there — so the image can be cropped to the top square without losing anyone or anything. Character fully centered vertically — full head, hair, and shoulders visible with clear space above; never cropped at the top. No English text or signs; any visible signage should be blank or in Hebrew. NO text, letters, words, numbers, captions, titles, watermarks, logos, or speech bubbles inside the image.`;
+        const coverScenePrompt = `${styleLock} ${coverScene} Portrait orientation. Compose the frame freely — the scene may use the full height of the portrait. The child's full head, hair, and shoulders visible with clear space above; never cropped at the top. No English text or signs; any visible signage should be blank or in Hebrew. NO text, letters, words, numbers, captions, titles, watermarks, logos, or speech bubbles inside the image.`;
         coverGenPromise = Promise.race([
           generatePageImageV2(referenceBuffer, coverScenePrompt).then(r => normalizeImageToBase64(r?.data?.[0])),
           new Promise((_, reject) => setTimeout(() => reject(new Error("cover timed out after 180s")), 180000))
         ]);
       } else {
-        const coverPrompt = `Create a premium children's storybook COVER illustration.\n\nIllustration style: ${safeStyle}\n\nLOCKED CHILD CHARACTER:\n${sanitizeBrandTerms(promptCore)}\n\nSHORT CHARACTER SUMMARY:\n${sanitizeBrandTerms(characterSummary)}\n\nSTORY DIRECTION:\n${sanitizeBrandTerms(storyIdea)}\n\nRules:\n- create ONE beautiful single cover illustration\n- show the child as the hero in a magical scene\n- magical, premium, warm aesthetic\n- no character sheet, no multiple poses\n- COMPOSITION SAFE ZONE: place the child and every important story element in the TOP two-thirds of the frame; the bottom third must contain only ground, scenery, or soft atmosphere — no character, face, hands, or important object there — so the image can be cropped to the top square without losing anyone or anything\n- NO text, letters, words, numbers, or writing of any kind rendered inside the image\n- NO captions, titles, subtitles, labels, or book title text on the image\n- no watermark\n- no logos\n- no copyrighted costume emblems`;
+        const coverPrompt = `Create a premium children's storybook COVER illustration.\n\nIllustration style: ${safeStyle}\n\nLOCKED CHILD CHARACTER:\n${sanitizeBrandTerms(promptCore)}\n\nSHORT CHARACTER SUMMARY:\n${sanitizeBrandTerms(characterSummary)}\n\nSTORY DIRECTION:\n${sanitizeBrandTerms(storyIdea)}\n\nRules:\n- create ONE beautiful single cover illustration\n- show the child as the hero in a magical scene\n- magical, premium, warm aesthetic\n- no character sheet, no multiple poses\n- compose the frame freely — the scene may use the full height of the portrait\n- NO text, letters, words, numbers, or writing of any kind rendered inside the image\n- NO captions, titles, subtitles, labels, or book title text on the image\n- no watermark\n- no logos\n- no copyrighted costume emblems`;
         coverGenPromise = Promise.race([
           openai.images.generate({ model: "gpt-image-2", prompt: coverPrompt, size: "1024x1536", quality: "high" }),
           new Promise((_, reject) => setTimeout(() => reject(new Error("cover timed out after 180s")), 180000))
@@ -2641,7 +2657,8 @@ Rules:
 - Each page text must be 35-70 words
 - The child must clearly be the hero
 - imagePrompt must describe the same illustrated storybook character consistently across all pages — same face, hair, and features in every scene. Never use "the child", "boy", or "girl" — instead use "the young storybook hero" (for a boy) or "the young storybook heroine" (for a girl). Always describe an illustrated character, never a real person or photograph.
-- Every imagePrompt must compose the scene so that all characters and important story elements sit in the TOP two-thirds of the portrait; keep the bottom third as ground, scenery, or atmosphere only (no character or key object there), so the picture survives a top-anchored square crop.
+- Each imagePrompt must be written FROM THAT PAGE'S OWN TEXT. Name the specific action happening in that page's sentences, the place it happens, every object and prop the text mentions, and every other character present (animals, friends, family) with a brief visual description. If an imagePrompt could be swapped with another page's imagePrompt without anyone noticing, it is wrong — rewrite it.
+- Vary the camera across the twelve pages. Begin every imagePrompt with exactly one of these framings: "Wide establishing shot", "Full-body shot", "Medium shot", or "Close-up". Across the twelve pages use "Wide establishing shot" at least three times, "Full-body shot" at least three times, and "Close-up" no more than twice. Choose the framing that the page's own moment calls for — a quiet bedtime page, a running page, and a group page must not be framed alike.
 - No page numbers inside text
 - No brand names
 - Do not mention copyrighted characters or logos

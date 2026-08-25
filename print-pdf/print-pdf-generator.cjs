@@ -51,11 +51,23 @@ try {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// 22cm + 3.2mm bleed × 2 sides = 226.4mm
-const BLEED_MM  = 3.2;
-const PAGE_MM   = 220 + BLEED_MM * 2;        // 226.4mm
-const MM_TO_PT  = 2.83465;                    // 1mm = 2.83465pt
-const PAGE_PT   = PAGE_MM * MM_TO_PT;         // ~641.5pt
+// Print format — 19 × 28.5 cm portrait, exactly 2:3 (owner decision 2026-08-24,
+// confirmed with Bookpod: any size between A6 and A4, portrait, same price as the
+// former square). The digital illustration is 1024×1536 — the same 2:3 — so it
+// fills the page with an effective crop of 1.09%, against 33% under the square.
+// That is what retired the square-as-canvas contract.
+const BLEED_MM   = 3.2;
+const TRIM_W_MM  = 190;
+const TRIM_H_MM  = 285;
+const PAGE_W_MM  = TRIM_W_MM + BLEED_MM * 2;  // 196.4mm
+const PAGE_H_MM  = TRIM_H_MM + BLEED_MM * 2;  // 291.4mm
+const MM_TO_PT   = 2.83465;                    // 1mm = 2.83465pt
+const PAGE_W_PT  = PAGE_W_MM * MM_TO_PT;       // ~556.7pt
+const PAGE_H_PT  = PAGE_H_MM * MM_TO_PT;       // ~826.0pt
+// Kept as the reference dimension for anything sized as a fraction of the page
+// (type sizes, margins, blur radii) so those calibrations carry over unchanged.
+const PAGE_MM    = PAGE_W_MM;
+const PAGE_PT    = PAGE_W_PT;
 
 // Text margins (inside bleed zone, from bleed edge)
 const MARGIN_INNER_MM = BLEED_MM + 10;        // 13.2mm from edge → 10mm safe margin
@@ -675,27 +687,38 @@ function dominantColorFromStrip(croppedImg, splitX) {
   return best;
 }
 
+// Text page background: a calm tone drawn from that page's own illustration, the
+// same relationship the digital viewer already uses between its coloured text
+// half and its picture half. Under the square format this had to be an outpainted
+// continuation of the illustration, because the illustration itself had been cut
+// down to a square and the leftover strip was the only material available. At
+// 2:3 the illustration fills its own page whole, so the text page is free to be
+// what it should have been all along — quiet ground for the words.
 function buildWideTextBgJpeg(croppedImg, splitX) {
   const { createCanvas } = require('canvas');
-  const PX = Math.round(PAGE_MM / 25.4 * 300);
+  const W = PRINT_W_PX, H = PRINT_H_PX;
   const dom = dominantColorFromStrip(croppedImg, splitX);
-  const canvas = createCanvas(PX, PX);
+  const canvas = createCanvas(W, H);
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = `rgb(${dom[0]},${dom[1]},${dom[2]})`;
-  ctx.fillRect(0, 0, PX, PX);
-  const rad = ctx.createRadialGradient(PX/2, PX/2, 0, PX/2, PX/2, PX * 0.72);
+  ctx.fillRect(0, 0, W, H);
+  const rad = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, H * 0.72);
   rad.addColorStop(0,    'rgba(255,255,255,0.58)');
   rad.addColorStop(0.42, 'rgba(255,255,255,0.32)');
   rad.addColorStop(0.75, 'rgba(255,255,255,0.08)');
   rad.addColorStop(1,    'rgba(0,0,0,0.15)');
   ctx.fillStyle = rad;
-  ctx.fillRect(0, 0, PX, PX);
+  ctx.fillRect(0, 0, W, H);
   return canvas.toBuffer('image/jpeg', { quality: 0.875 });
 }
 
 // ── Print-quality defaults (calibrated on Ray Yanai) ─────────────────────────
-const PRINT_PX            = Math.round(PAGE_MM / 25.4 * 300); // ~2674px at 300 DPI
-const MIN_EFFECTIVE_PX    = 2674;   // resolution gate: min source dim after upscale
+const PRINT_W_PX          = Math.round(PAGE_W_MM / 25.4 * 300); // 2320px at 300 DPI
+const PRINT_H_PX          = Math.round(PAGE_H_MM / 25.4 * 300); // 3442px at 300 DPI
+const PRINT_PX            = PRINT_W_PX;
+// Resolution gate: the narrow dimension of the printed page. The illustration
+// now fills the page whole, so this is what a page image must reach.
+const MIN_EFFECTIVE_PX    = PRINT_W_PX;
 const SHARPNESS_MIN       = 6;      // Laplacian-variance floor (conservative; log-only calibrate)
 const PRINT_BRIGHTEN_PCT  = 0.05;   // ~5% lift — print always darker than screen
 
@@ -824,22 +847,24 @@ async function computeSpreadGeometry(wideBuffer) {
   return { W, H, CROP_H, cropY, croppedImg, splitX, bbox, frameValid, frameReason };
 }
 
-// Option A — uniform-scale cover-crop to a square. NEVER stretches (single scalar).
-// Character sits on the LEFT, spine on the RIGHT: any horizontal excess is cropped
-// from the RIGHT (spine) side only — never the character side. Vertical excess is
-// centered (the vertical content window already framed the character).
-function coverCropToSquare(srcImg, targetPX) {
+// Fill the printed page with the illustration. Uniform scale — a single scalar,
+// so nothing is ever stretched — and the overflow is split evenly between the two
+// edges rather than taken off one side.
+//
+// The page file is 2320×3442 (0.67403) and the illustration is 1024×1536
+// (0.66667), so the fit is driven by the width and the overflow is vertical:
+// 1536 × (2320/1024) = 3480px against 3442px of page, i.e. 38px — 1.09% of the
+// picture, 19px off the top and 19px off the bottom, about 1.6mm each.
+function coverCropToPage(srcImg, targetW = PRINT_W_PX, targetH = PRINT_H_PX) {
   const { createCanvas } = require('canvas');
   const uw = srcImg.width, uh = srcImg.height;
-  const s  = Math.max(targetPX / uw, targetPX / uh); // fill, uniform
+  const s  = Math.max(targetW / uw, targetH / uh); // fill, uniform
   const scaledW = uw * s, scaledH = uh * s;
-  const dx = 0;                          // left-align → keep character, crop spine (right)
-  const dy = (targetPX - scaledH) / 2;   // center vertically
-  const canvas = createCanvas(targetPX, targetPX);
+  const canvas = createCanvas(targetW, targetH);
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(srcImg, dx, dy, scaledW, scaledH);
+  ctx.drawImage(srcImg, (targetW - scaledW) / 2, (targetH - scaledH) / 2, scaledW, scaledH);
   return canvas;
 }
 
@@ -1365,7 +1390,11 @@ function renderStoryTextPagePng(text) {
 function renderHebrewTextPng(text, squareBuffer) {
   try {
     const { createCanvas } = require('canvas');
-    const PX = Math.round(PAGE_MM / 25.4 * 300);  // ~2673px at 300 DPI
+    // PX stays the page WIDTH: every type size and margin below was calibrated as
+    // a fraction of it, so the words keep exactly the size they were approved at.
+    // Only the canvas becomes taller.
+    const PX = PRINT_W_PX;
+    const PH = PRINT_H_PX;
     const MARGIN_PX = Math.round(MARGIN_INNER_MM / 25.4 * 300);
 
     // Brand dark-brown text on the light vignette — NO outline/shadow of any kind.
@@ -1375,11 +1404,16 @@ function renderHebrewTextPng(text, squareBuffer) {
     const textColor = '#2c1a0e';
     console.log('[print-pdf] text overlay: brand dark-brown, no outline');
 
-    const canvas = createCanvas(PX, PX);
+    const canvas = createCanvas(PX, PH);
     const ctx    = canvas.getContext('2d');
-    ctx.clearRect(0, 0, PX, PX); // transparent background
+    ctx.clearRect(0, 0, PX, PH); // transparent background
 
-    const FONT_SIZE = Math.round(PX * 0.043); // ~115px ≈ 14.5pt at 300DPI — Frank Ruhl Libre is a serif with a lower x-height, so sized up slightly for the same optical weight on the page
+    // The approved story type is 9.74mm on the paper (it was set as 0.043 of a
+    // 226.4mm-wide square page). Anchored in mm, not in a fraction of the page,
+    // so the narrower 19cm page prints the same size the owner approved rather
+    // than silently 13% smaller.
+    const STORY_TYPE_MM = 9.74;
+    const FONT_SIZE = Math.round(STORY_TYPE_MM / 25.4 * 300); // ~115px ≈ 27.6pt — Frank Ruhl Libre is a serif with a lower x-height, so sized up slightly for the same optical weight on the page
     const LINE_H    = Math.round(FONT_SIZE * 1.75); // serif body reads comfortably a hair tighter than the sans; still generous, airy leading
     const MAX_W     = PX - MARGIN_PX * 2;
 
@@ -1399,7 +1433,7 @@ function renderHebrewTextPng(text, squareBuffer) {
 
     // Block centred both ways: horizontally on PX/2, vertically on the page middle.
     const blockH = lines.length * LINE_H;
-    let y = Math.max(MARGIN_PX, (PX - blockH) / 2) + FONT_SIZE;
+    let y = Math.max(MARGIN_PX, (PH - blockH) / 2) + FONT_SIZE;
     for (const line of lines) {
       ctx.fillText(line, PX / 2, y);
       y += LINE_H;
@@ -1454,15 +1488,18 @@ async function loadLogoPng() {
  */
 function renderFramePagePng(textLines, ruleYMms = [], nameLine = null, logo = null, logoYFrac = 0.36, doubleBorder = false) {
   const { createCanvas, Image } = require('canvas');
-  const PX    = Math.round(PAGE_MM / 25.4 * 300); // ~2673px at 300 DPI
-  const mm2px = PX / PAGE_MM;
+  // PX is the page WIDTH and PH the page HEIGHT. Everything measured in mm is
+  // unchanged; everything measured as a fraction of the page runs down PH.
+  const PX    = PRINT_W_PX;
+  const PH    = PRINT_H_PX;
+  const mm2px = PX / PAGE_W_MM;
 
-  const canvas = createCanvas(PX, PX);
+  const canvas = createCanvas(PX, PH);
   const ctx    = canvas.getContext('2d');
 
   // Cream background
   ctx.fillStyle = '#fdf8f0';
-  ctx.fillRect(0, 0, PX, PX);
+  ctx.fillRect(0, 0, PX, PH);
 
   // Double gold border frame (like digital dedication page)
   if (doubleBorder) {
@@ -1470,9 +1507,9 @@ function renderFramePagePng(textLines, ruleYMms = [], nameLine = null, logo = nu
     const PAD_IN  = 14 * mm2px;
     ctx.strokeStyle = '#c8a84b';
     ctx.lineWidth   = 1.2 * mm2px;
-    ctx.strokeRect(PAD_OUT, PAD_OUT, PX - PAD_OUT * 2, PX - PAD_OUT * 2);
+    ctx.strokeRect(PAD_OUT, PAD_OUT, PX - PAD_OUT * 2, PH - PAD_OUT * 2);
     ctx.lineWidth   = 0.5 * mm2px;
-    ctx.strokeRect(PAD_IN, PAD_IN, PX - PAD_IN * 2, PX - PAD_IN * 2);
+    ctx.strokeRect(PAD_IN, PAD_IN, PX - PAD_IN * 2, PH - PAD_IN * 2);
   }
 
   // Gold rules
@@ -1482,7 +1519,7 @@ function renderFramePagePng(textLines, ruleYMms = [], nameLine = null, logo = nu
     ctx.lineWidth   = ruleW;
     ctx.beginPath();
     ctx.moveTo(MARGIN_OUTER_MM * mm2px, yMm * mm2px);
-    ctx.lineTo((PAGE_MM - MARGIN_OUTER_MM) * mm2px, yMm * mm2px);
+    ctx.lineTo((PAGE_W_MM - MARGIN_OUTER_MM) * mm2px, yMm * mm2px);
     ctx.stroke();
   }
 
@@ -1492,7 +1529,7 @@ function renderFramePagePng(textLines, ruleYMms = [], nameLine = null, logo = nu
     const logoW  = Math.round(PX * 0.26);
     const logoH  = Math.round(logo.h * (logoW / logo.w));
     const logoX  = (PX - logoW) / 2;
-    const logoY  = logoYFrac * PX - logoH / 2;
+    const logoY  = logoYFrac * PH - logoH / 2;
     const img    = new Image();
     img.src      = logo.buffer;
     ctx.drawImage(img, logoX, logoY, logoW, logoH);
@@ -1509,12 +1546,12 @@ function renderFramePagePng(textLines, ruleYMms = [], nameLine = null, logo = nu
 
   // Name underline (gold line where child writes their name)
   if (nameLine) {
-    const y = nameLine.yFrac * PX;
+    const y = nameLine.yFrac * PH;
     ctx.strokeStyle = '#c8a84b';
     ctx.lineWidth   = 0.9 * mm2px;
     ctx.beginPath();
     ctx.moveTo(50 * mm2px, y);
-    ctx.lineTo((PAGE_MM - 50) * mm2px, y);
+    ctx.lineTo((PAGE_W_MM - 50) * mm2px, y);
     ctx.stroke();
   }
 
@@ -1526,7 +1563,7 @@ function renderFramePagePng(textLines, ruleYMms = [], nameLine = null, logo = nu
     const fsPx = line.fontSize * mm2px;
     ctx.font      = `${line.bold ? '700 ' : '400 '}${fsPx}px Arial Unicode MS, Arial, sans-serif`;
     ctx.fillStyle = line.color || '#2c1a0e';
-    ctx.fillText(line.text, PX / 2, line.yFrac * PX);
+    ctx.fillText(line.text, PX / 2, line.yFrac * PH);
   }
 
   return canvas.toBuffer('image/png');
@@ -1536,7 +1573,7 @@ function renderFramePagePng(textLines, ruleYMms = [], nameLine = null, logo = nu
 
 async function buildPDF(book, spreads, outputPath, logo) {
   const doc = new PDFDocument({
-    size:          [PAGE_PT, PAGE_PT],
+    size:          [PAGE_W_PT, PAGE_H_PT],
     margin:        0,
     autoFirstPage: false,
     info: {
@@ -1555,7 +1592,7 @@ async function buildPDF(book, spreads, outputPath, logo) {
   // Helper: add a frame page from a canvas PNG buffer
   function addFramePage(pngBuffer) {
     doc.addPage();
-    doc.image(pngBuffer, 0, 0, { width: PAGE_PT, height: PAGE_PT });
+    doc.image(pngBuffer, 0, 0, { width: PAGE_W_PT, height: PAGE_H_PT });
   }
 
   // ── PARITY NOTE ─────────────────────────────────────────────────────────────
@@ -1575,17 +1612,18 @@ async function buildPDF(book, spreads, outputPath, logo) {
 
   function makeStarPage() {
     const { createCanvas } = require('canvas');
-    const PX    = Math.round(PAGE_MM / 25.4 * 300);
-    const mm2px = PX / PAGE_MM;
-    const canvas = createCanvas(PX, PX);
+    const PX    = PRINT_W_PX;
+    const PH    = PRINT_H_PX;
+    const mm2px = PX / PAGE_W_MM;
+    const canvas = createCanvas(PX, PH);
     const ctx    = canvas.getContext('2d');
     ctx.fillStyle = '#fdf8f0';
-    ctx.fillRect(0, 0, PX, PX);
+    ctx.fillRect(0, 0, PX, PH);
     ctx.strokeStyle = '#c8a84b';
     ctx.lineWidth   = 1.0 * mm2px;
-    ctx.strokeRect(10 * mm2px, 10 * mm2px, PX - 20 * mm2px, PX - 20 * mm2px);
+    ctx.strokeRect(10 * mm2px, 10 * mm2px, PX - 20 * mm2px, PH - 20 * mm2px);
     ctx.lineWidth   = 0.4 * mm2px;
-    ctx.strokeRect(14 * mm2px, 14 * mm2px, PX - 28 * mm2px, PX - 28 * mm2px);
+    ctx.strokeRect(14 * mm2px, 14 * mm2px, PX - 28 * mm2px, PH - 28 * mm2px);
     const stars = [
       [0.20, 0.22, 22], [0.78, 0.18, 16], [0.50, 0.12, 30],
       [0.30, 0.55, 14], [0.70, 0.50, 18], [0.50, 0.52, 36],
@@ -1597,7 +1635,7 @@ async function buildPDF(book, spreads, outputPath, logo) {
       ctx.font      = `${fsPx}px Arial Unicode MS, Arial, sans-serif`;
       ctx.fillStyle = `rgba(200,168,75,${alpha})`;
       ctx.textAlign = 'center';
-      ctx.fillText('✦', xF * PX, yF * PX);
+      ctx.fillText('✦', xF * PX, yF * PH);
     }
     return canvas.toBuffer('image/png');
   }
@@ -1622,14 +1660,14 @@ async function buildPDF(book, spreads, outputPath, logo) {
 
     // Page A — TEXT (even = RIGHT): outpainted extension bg + transparent Hebrew text overlay
     doc.addPage();
-    doc.image(spread.textBgJpeg, 0, 0, { width: PAGE_PT, height: PAGE_PT });
+    doc.image(spread.textBgJpeg, 0, 0, { width: PAGE_W_PT, height: PAGE_H_PT });
     if (spread.textOverlayPng) {
-      doc.image(spread.textOverlayPng, 0, 0, { width: PAGE_PT, height: PAGE_PT });
+      doc.image(spread.textOverlayPng, 0, 0, { width: PAGE_W_PT, height: PAGE_H_PT });
     }
 
     // Page B — ILLUSTRATION (odd = LEFT): original character, full-bleed, 1:1, zero distortion
     doc.addPage();
-    doc.image(spread.illustrationJpeg, 0, 0, { width: PAGE_PT, height: PAGE_PT });
+    doc.image(spread.illustrationJpeg, 0, 0, { width: PAGE_W_PT, height: PAGE_H_PT });
   }
 
   // ── Star pages (dynamic) at END before closing ────────────────────────────────
@@ -1648,7 +1686,7 @@ async function buildPDF(book, spreads, outputPath, logo) {
       { text: 'שכל הרפתקה מתחילה ממך',                      fontSize: 6.5, yFrac: 0.68, bold: false, color: '#7a5c3a' },
       { text: 'lifebooksil.com',                              fontSize: 4.5, yFrac: 0.78, bold: false, color: '#a08060' },
     ],
-    [18, PAGE_MM - 18], null, logo, 0.34
+    [18, PAGE_H_MM - 18], null, logo, 0.34
   ));
 
   // ── עמוד אחורי — לוגו בלבד ───────────────────────────────────────────────────
@@ -1656,7 +1694,7 @@ async function buildPDF(book, spreads, outputPath, logo) {
     [
       { text: 'lifebooksil.com', fontSize: 5, yFrac: 0.62, bold: false, color: '#a08060' },
     ],
-    [20, PAGE_MM - 20], null, logo, 0.40
+    [20, PAGE_H_MM - 20], null, logo, 0.40
   ));
 
   doc.end();
@@ -1803,11 +1841,12 @@ async function generatePrintPDF(bookId, options = {}) {
     return { dryRun: true, outputPath, debugDir, pagesNeedingPrep, costEstimate: 0 };
   }
 
-  // ── STEP 3: Illustration = the digital book's OWN image, smart-cropped to square ──
+  // ── STEP 3: Illustration = the digital book's OWN image, used whole ─────────
   // Option 2 (2026-07-23): NO print generation. Pixel-for-pixel identity — exactly the
-  // book the customer already saw and approved — at zero AI cost. The digital
-  // illustration (portrait 1024×1536) is cropped to a W×W square biased UPWARD
-  // (`smartSquareCropUp`), then fed to the unchanged square path (upscale + assemble).
+  // book the customer already saw and approved — at zero AI cost.
+  // Since 2026-08-24 the printed page is 2:3, the same proportion as the digital
+  // illustration, so there is nothing to crop to and nothing to choose: the image
+  // passes through untouched and meets the page in STEP 5.
   console.log(`[print-pdf] STEP 3: preparing ${pilotPages} illustration(s) from the digital book...`);
   const wideBuffers = [];
 
@@ -1830,10 +1869,9 @@ async function generatePrintPDF(bookId, options = {}) {
       wideBuffers.push(null);
       continue;
     }
-    const squareBuf = smartSquareCropUp(digitalPageBuffer, `page-${i}`);
-    saveDebug(debugDir, `page-${i}-wide.jpg`, squareBuf);
-    wideBuffers.push(squareBuf);
-    console.log(`[print-pdf] STEP 3: page ${i} done — square crop, $0.00 ${elapsed(globalStart)}`);
+    saveDebug(debugDir, `page-${i}-wide.jpg`, digitalPageBuffer);
+    wideBuffers.push(digitalPageBuffer);
+    console.log(`[print-pdf] STEP 3: page ${i} done — full illustration, no crop, $0.00 ${elapsed(globalStart)}`);
   }
   console.log(`[print-pdf] STEP 3 done ${elapsed(globalStart)}`);
 
@@ -1850,15 +1888,10 @@ async function generatePrintPDF(bookId, options = {}) {
     }
     if (!wideBuffers[i]) { upscaledIllusBuffers.push(null); continue; }
 
-    // Extract illustration portion via content-aware geometry (Fix 2, same as STEP 5)
-    const { createCanvas, Image } = require('canvas');
-    const { croppedImg, splitX, CROP_H } = await computeSpreadGeometry(wideBuffers[i]);
-    const illusRaw = createCanvas(splitX, CROP_H);
-    illusRaw.getContext('2d').drawImage(croppedImg, 0, 0, splitX, CROP_H, 0, 0, splitX, CROP_H);
-    const illusPng = illusRaw.toBuffer('image/png');
-    saveDebug(debugDir, `page-${i}-illus-preupscale.png`, illusPng);
-
-    const upscaled = await upscaleImage(illusPng, `page-${i}`);
+    // The whole illustration is upscaled — there is no region to extract now that
+    // the page carries the entire picture.
+    const { Image } = require('canvas');
+    const upscaled = await upscaleImage(wideBuffers[i], `page-${i}`);
     costEstimate += 0.01;
 
     // Resolution check (defensive — STEP 3 gate already guarantees split ≥ 669px)
@@ -1887,33 +1920,20 @@ async function generatePrintPDF(bookId, options = {}) {
   for (let i = 0; i < pilotPages; i++) {
     // Safety net — the STEP 2 readiness gate should already have caught this.
     if (!wideBuffers[i]) throw new Error(
-      `[print-pdf] STEP 5: page ${i} of book ${bookId} ("${book.childName || 'unknown child'}") has no square ` +
+      `[print-pdf] STEP 5: page ${i} of book ${bookId} ("${book.childName || 'unknown child'}") has no ` +
       `illustration to assemble — ${missingReasons[i] || 'the source illustration could not be prepared in STEP 3'}`
     );
     const { loadImage } = require('canvas');
-    const PX = PRINT_PX;
 
-    // Content-aware geometry (identical deterministic call as STEP 4)
-    const { croppedImg, splitX, CROP_H } = await computeSpreadGeometry(wideBuffers[i]);
-
-    // Illustration page — Option A: uniform-scale cover-crop to square, ZERO stretch.
-    // Any excess is cropped from the spine (right) side only, never the character.
-    let illusSrc;
-    if (upscaledIllusBuffers[i]) {
-      illusSrc = await loadImage(upscaledIllusBuffers[i]);   // full upscaled region (splitX×CROP_H ×4)
-    } else {
-      // Fallback (no upscale): extract raw illustration region at native res
-      const { createCanvas } = require('canvas');
-      const illusC = createCanvas(splitX, CROP_H);
-      illusC.getContext('2d').drawImage(croppedImg, 0, 0, splitX, CROP_H, 0, 0, splitX, CROP_H);
-      illusSrc = await loadImage(illusC.toBuffer('image/png'));
-    }
-    const illusCanvas = coverCropToSquare(illusSrc, PX);      // uniform scale + spine-side crop
+    // Illustration page — the whole picture, scaled to fill the 2:3 page.
+    const illusSrc = await loadImage(upscaledIllusBuffers[i] || wideBuffers[i]);
+    const illusCanvas = coverCropToPage(illusSrc);
     let illustrationJpeg = illusCanvas.toBuffer('image/jpeg', { quality: 0.9 });
     illustrationJpeg = printBrighten(illustrationJpeg);       // print compensation ~5%
 
     // Text background + overlay (brighten bg only, NEVER the dark text overlay)
-    let textBgJpeg      = buildWideTextBgJpeg(croppedImg, splitX);
+    const toneImg       = await loadImage(wideBuffers[i]);
+    let textBgJpeg      = buildWideTextBgJpeg(toneImg, toneImg.width);
     textBgJpeg          = printBrighten(textBgJpeg);
     const storyText     = storyPages[i]?.text || '';
     const textOverlayPng = storyText ? renderHebrewTextPng(storyText, null) : null;
@@ -1926,10 +1946,10 @@ async function generatePrintPDF(bookId, options = {}) {
       const { createCanvas, loadImage } = require('canvas');
       const bgImg  = await loadImage(textBgJpeg);
       const ovImg  = await loadImage(textOverlayPng);
-      const comp   = createCanvas(PX, PX);
+      const comp   = createCanvas(PRINT_W_PX, PRINT_H_PX);
       const cctx   = comp.getContext('2d');
-      cctx.drawImage(bgImg, 0, 0, PX, PX);
-      cctx.drawImage(ovImg, 0, 0, PX, PX);
+      cctx.drawImage(bgImg, 0, 0, PRINT_W_PX, PRINT_H_PX);
+      cctx.drawImage(ovImg, 0, 0, PRINT_W_PX, PRINT_H_PX);
       textPageJpeg = comp.toBuffer('image/jpeg', { quality: 0.9 });
     }
 
@@ -1982,18 +2002,139 @@ async function generatePrintPDF(bookId, options = {}) {
  * Front uses one AI outpaint (cover → square, centered, heads preserved),
  * cached in debug. Output: print-pdf/output/{bookId}-cover.pdf
  */
+// ── Approved cover mechanism (owner approval 2026-08-23, variant ב') ──────────
+// Three deterministic, free repairs applied before any type is drawn.
+
+// 1. Outpaint seam repair. The square is produced by padding a portrait, so the
+// two vertical joins between original and generated pixels sit at fixed
+// fractions of the width. Each row's outer pixels are re-gained to match the
+// original beside them, then the joins are feathered.
+const COVER_SEAM_SAMPLE = 14;
+function repairOutpaintSeams(img, bandL, bandR) {
+  const { createCanvas } = require('canvas');
+  const W = img.width, H = img.height;
+  const w = createCanvas(W, H), wc = w.getContext('2d');
+  wc.drawImage(img, 0, 0);
+  if (bandL <= 0 || bandR >= W || bandR <= bandL) return w;
+  const id = wc.getImageData(0, 0, W, H), d = id.data, SAMP = COVER_SEAM_SAMPLE;
+  for (let y = 0; y < H; y++) {
+    for (const side of ['L', 'R']) {
+      const refX0 = side === 'L' ? bandL : bandR - SAMP;
+      const bndX0 = side === 'L' ? bandL - SAMP : bandR;
+      const rr = [0, 0, 0], bb = [0, 0, 0];
+      for (let k = 0; k < SAMP; k++) {
+        const i = (y * W + refX0 + k) * 4; rr[0] += d[i]; rr[1] += d[i + 1]; rr[2] += d[i + 2];
+        const j = (y * W + bndX0 + k) * 4; bb[0] += d[j]; bb[1] += d[j + 1]; bb[2] += d[j + 2];
+      }
+      const gain = [0, 1, 2].map(c => (rr[c] / SAMP + 4) / (bb[c] / SAMP + 4));
+      const x0 = side === 'L' ? 0 : bandR, x1 = side === 'L' ? bandL : W, span = x1 - x0;
+      for (let x = x0; x < x1; x++) {
+        const t = side === 'L' ? (x - x0) / span : 1 - (x - x0) / span;
+        const k = 0.65 + 0.35 * t, i = (y * W + x) * 4;
+        for (let c = 0; c < 3; c++) d[i + c] = Math.max(0, Math.min(255, d[i + c] * (1 + (gain[c] - 1) * k)));
+      }
+    }
+  }
+  wc.putImageData(id, 0, 0);
+  // Feather the two joins. node-canvas silently ignores ctx.filter="blur(...)",
+  // so the blur is done by hand.
+  for (const sx of [bandL, bandR]) {
+    const F = 30, x0 = Math.max(0, sx - F), fw = Math.min(W, sx + F) - x0;
+    if (fw < 4) continue;
+    const sharp = wc.getImageData(x0, 0, fw, H);
+    const soft = wc.getImageData(x0, 0, fw, H);
+    boxBlurRGB(soft.data, fw, H, Math.round(F / 3));
+    const a = sharp.data, b = soft.data;
+    for (let i = 0; i < fw * H; i++) {
+      for (let c = 0; c < 3; c++) a[i * 4 + c] = a[i * 4 + c] * 0.45 + b[i * 4 + c] * 0.55;
+    }
+    wc.putImageData(sharp, x0, 0);
+  }
+  return w;
+}
+
+// Separable box blur, three passes. Needed because node-canvas accepts
+// ctx.filter = "blur(Npx)" and then leaves the pixels untouched.
+function boxBlurRGB(data, W, H, radius, passes = 3) {
+  const r = Math.round(radius);
+  if (r < 1) return;
+  const tmp = new Float32Array(W * H);
+  const cx = x => x < 0 ? 0 : x >= W ? W - 1 : x;
+  const cy = y => y < 0 ? 0 : y >= H ? H - 1 : y;
+  const n = 2 * r + 1;
+  for (let p = 0; p < passes; p++) {
+    for (let c = 0; c < 3; c++) {
+      for (let y = 0; y < H; y++) {
+        const row = y * W;
+        let sum = 0;
+        for (let x = -r; x <= r; x++) sum += data[(row + cx(x)) * 4 + c];
+        for (let x = 0; x < W; x++) {
+          tmp[row + x] = sum / n;
+          sum -= data[(row + cx(x - r)) * 4 + c];
+          sum += data[(row + cx(x + r + 1)) * 4 + c];
+        }
+      }
+      for (let x = 0; x < W; x++) {
+        let sum = 0;
+        for (let y = -r; y <= r; y++) sum += tmp[cy(y) * W + x];
+        for (let y = 0; y < H; y++) {
+          data[(y * W + x) * 4 + c] = sum / n;
+          sum -= tmp[cy(y - r) * W + x];
+          sum += tmp[cy(y + r + 1) * W + x];
+        }
+      }
+    }
+  }
+}
+
+// 2. Drop the bottom of the source — where the model tends to render a gibberish
+// object — and win the lost height back by extending the sky upward from its own
+// per-column colour. Sky carries almost no edge energy, so the extension is
+// invisible; this is what replaces the old title banner.
+const COVER_DROP_BOTTOM = 0.14;
+const COVER_SKY_EXT = 0.14;
+
+// Back cover — vertical placement as fractions of the page height. These were
+// 0.30 / 0.55 / 0.70 while the cover was square; on the taller 2:3 page that
+// same set left the bottom third of the page empty. Re-centred so the block
+// sits in the middle of the page and the domain line reaches the foot.
+const BACK_LOGO_Y   = 0.34;
+const BACK_DEDIC_Y  = 0.60;
+const BACK_DOMAIN_Y = 0.88;
+
+// 3. Adaptive halo. Ink is #fbf5e6. The scrim tends to (28,14,2). Solve the alpha
+// that brings the brightest realistic patch under the type down to TARGET_L. On a
+// dark sky the answer is zero and nothing is drawn at all — which is the owner's
+// condition: the halo may never be perceptible as an element.
+const COVER_TARGET_L = 118, COVER_SCRIM_L = 17, COVER_ALPHA_MAX = 0.45;
+function coverHaloAlpha(ctx, W, y0, y1) {
+  const d = ctx.getImageData(0, y0, W, y1 - y0).data;
+  const L = [];
+  for (let i = 0; i < d.length; i += 4) L.push(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+  L.sort((a, b) => a - b);
+  const p90 = L[Math.floor(L.length * 0.9)];
+  if (p90 <= COVER_TARGET_L) return { a: 0, p90 };
+  return { a: Math.min(COVER_ALPHA_MAX, (p90 - COVER_TARGET_L) / (p90 - COVER_SCRIM_L)), p90 };
+}
+
 async function generateCoverPDF(bookId, options = {}) {
   const subtitleOverride = options.subtitleOverride ?? null;
   const globalStart = Date.now();
 
-  const COVER_MM = PAGE_MM;              // 226.4mm — trim 220 + bleed 3.2 each side
-  const COVER_PT = COVER_MM * MM_TO_PT;
-  const COVER_PX = PRINT_PX;             // ~2674px square at 300 DPI (same as pages)
-  const mm2px    = COVER_PX / COVER_MM;
-  const bleedPx  = Math.round(BLEED_MM * mm2px);
+  const COVER_W_PT = PAGE_W_PT;
+  const COVER_H_PT = PAGE_H_PT;
+  const COVER_W_MM = PAGE_W_MM;
+  const COVER_H_MM = PAGE_H_MM;
+  const COVER_W_PX = PRINT_W_PX;
+  const COVER_H_PX = PRINT_H_PX;
+  // Type sizes and the halo were approved as fractions of the cover's width, so
+  // that is what COVER_PX keeps meaning. Vertical positions use COVER_H_PX.
+  const COVER_PX   = COVER_W_PX;
+  const mm2px      = COVER_W_PX / COVER_W_MM;
+  const bleedPx    = Math.round(BLEED_MM * mm2px);
 
   console.log(`[cover-pdf] ── START ── bookId: ${bookId}`);
-  console.log(`[cover-pdf] 2 pages, each ${COVER_MM.toFixed(1)}×${COVER_MM.toFixed(1)}mm (${COVER_PX}×${COVER_PX}px at 300DPI), no spine`);
+  console.log(`[cover-pdf] 2 pages, each ${COVER_W_MM.toFixed(1)}×${COVER_H_MM.toFixed(1)}mm (${COVER_W_PX}×${COVER_H_PX}px at 300DPI), no spine`);
 
   const debugDir = path.join(__dirname, 'debug', bookId);
   fs.mkdirSync(debugDir,   { recursive: true });
@@ -2016,93 +2157,92 @@ async function generateCoverPDF(bookId, options = {}) {
 
   const { createCanvas, Image } = require('canvas');
 
-  // ═══ PAGE 1 — FRONT (child photo + title), full-bleed square ═════════════════
-  const frontCanvas = createCanvas(COVER_PX, COVER_PX);
+  // ═══ PAGE 1 — FRONT (child photo + title), full-bleed 2:3 ════════════════════
+  const frontCanvas = createCanvas(COVER_W_PX, COVER_H_PX);
   const fctx        = frontCanvas.getContext('2d');
   {
-    // Load or generate a 1:1 square via outpainting (never center-crop — preserves heads)
-    const cachedSquarePath = path.join(debugDir, 'cover-square.png');
-    let squareBuf;
-    if (fs.existsSync(cachedSquarePath)) {
-      squareBuf = fs.readFileSync(cachedSquarePath);
-      console.log('[cover-pdf] cover-square.png loaded from cache');
-    } else {
-      console.log('[cover-pdf] outpainting cover to square, centered (~$0.04)…');
-      const openai = getOpenAI();
-      squareBuf = await outpaintToSquareCentered(openai, coverBuf, 'cover');
-      saveDebug(debugDir, 'cover-square.png', squareBuf);
-      console.log('[cover-pdf] cover-square.png saved to debug');
+    // The cover page is 2:3 and the cover illustration is 2:3, so there is
+    // nothing to outpaint. The paid square outpaint that used to happen here is
+    // gone, and with it the two vertical seams it left behind — which is what
+    // repairOutpaintSeams existed to hide. It stays in the call below purely as
+    // a no-op guard for a non-2:3 source.
+    const img = new Image();
+    img.src   = coverBuf;
+
+    // Approved cover composition (owner 2026-08-23, variant ב'): no banner. The
+    // title lives inside the illustration, on sky the picture itself provides.
+    const srcAspect = img.width && img.height ? img.width / img.height : 1;
+    const bandL = srcAspect < 0.62 ? Math.round(img.width * (1 - srcAspect / 0.6667) / 2) : 0;
+    const bandR = bandL ? img.width - bandL : 0;
+    const repaired = repairOutpaintSeams(img, bandL, bandR);
+
+    // Drop the bottom of the illustration and give the same amount back as sky
+    // at the top, so the title has room the picture actually provides. Both are
+    // the same fraction of the height, so the composition simply rises.
+    const usableH = Math.round(img.height * (1 - COVER_DROP_BOTTOM));
+    const extH = Math.round(COVER_H_PX * COVER_SKY_EXT);
+    {
+      // Uniform scale into the remaining area — never a stretch. The dropped
+      // region and the target differ by ~1% in proportion; that difference is
+      // taken as an even crop, not as distortion.
+      const region = createCanvas(img.width, usableH);
+      region.getContext('2d').drawImage(repaired, 0, 0, img.width, usableH, 0, 0, img.width, usableH);
+      const fitted = coverCropToPage(region, COVER_W_PX, COVER_H_PX - extH);
+      fctx.drawImage(fitted, 0, extH);
     }
 
-    const img = new Image();
-    img.src   = squareBuf;
+    // Sky extension: each column continues its own colour upward, darkening
+    // slightly with height the way a real sky does.
+    {
+      const seed = fctx.getImageData(0, extH, COVER_W_PX, 6).data, col = [];
+      for (let x = 0; x < COVER_W_PX; x++) {
+        let r = 0, g = 0, b = 0;
+        for (let k = 0; k < 6; k++) { const i = (k * COVER_W_PX + x) * 4; r += seed[i]; g += seed[i + 1]; b += seed[i + 2]; }
+        col[x] = [r / 6, g / 6, b / 6];
+      }
+      const ext = fctx.createImageData(COVER_W_PX, extH);
+      for (let y = 0; y < extH; y++) {
+        const t = 1 - y / extH, k = 1 - 0.16 * t;
+        for (let x = 0; x < COVER_W_PX; x++) {
+          const i = (y * COVER_W_PX + x) * 4;
+          ext.data[i] = col[x][0] * k;
+          ext.data[i + 1] = col[x][1] * k;
+          ext.data[i + 2] = col[x][2] * k * 0.985;
+          ext.data[i + 3] = 255;
+        }
+      }
+      fctx.putImageData(ext, 0, 0);
+    }
 
-    // Title banner across the top; the illustration fills the rest full-bleed.
-    // The banner gives the title a clean home AND lets us crop the bottom of the
-    // source clean off the page — that bottom strip is where the AI rendered a
-    // gibberish "book spine" of nonsense letters. Ray himself is untouched.
-    const BAND_H = Math.round(COVER_PX * 0.18);
+    // Halo only if the sky would otherwise leave the type unreadable.
+    const centreX = COVER_W_PX / 2;
+    const haloCY = Math.round(COVER_H_PX * 0.115);
+    const { a: haloA, p90: skyP90 } = coverHaloAlpha(fctx, COVER_W_PX, 0, Math.round(COVER_H_PX * 0.23));
+    console.log(`[cover-pdf] sky p90=${skyP90.toFixed(0)} → halo alpha=${haloA.toFixed(3)}${haloA === 0 ? ' (not drawn)' : ''}`);
+    if (haloA > 0.01) {
+      const g = fctx.createRadialGradient(centreX, haloCY, COVER_W_PX * 0.05, centreX, haloCY, COVER_W_PX * 0.60);
+      g.addColorStop(0, `rgba(28,14,2,${haloA.toFixed(3)})`);
+      g.addColorStop(0.55, `rgba(28,14,2,${(haloA * 0.48).toFixed(3)})`);
+      g.addColorStop(1, 'rgba(28,14,2,0)');
+      fctx.fillStyle = g;
+      fctx.fillRect(0, 0, COVER_W_PX, Math.round(COVER_H_PX * 0.5));
+    }
 
-    // Illustration: source window drops the top 4% (empty sky, hidden behind the
-    // banner anyway) and the bottom 14% (the gibberish book). Uniform scale — the
-    // source window and destination share the same aspect, so nothing stretches.
-    // Ray stays whole: head just under the banner, feet near the bottom edge.
-    const srcY = Math.round(img.height * 0.04);
-    const srcH = Math.round(img.height * 0.82);
-    fctx.drawImage(img, 0, srcY, img.width, srcH, 0, BAND_H, COVER_PX, COVER_PX - BAND_H);
-
-    // ── Top title banner — tone sampled from the cover's own sky for continuity ──
-    const skyStrip = fctx.getImageData(0, BAND_H + 2, COVER_PX, 4).data;
-    let tr = 0, tg = 0, tb = 0, tn = 0;
-    for (let i = 0; i < skyStrip.length; i += 4) { tr += skyStrip[i]; tg += skyStrip[i+1]; tb += skyStrip[i+2]; tn++; }
-    tr = Math.round(tr/tn * 0.72); tg = Math.round(tg/tn * 0.72); tb = Math.round(tb/tn * 0.72);
-    const bandGrad = fctx.createLinearGradient(0, 0, 0, BAND_H);
-    bandGrad.addColorStop(0, `rgb(${Math.round(tr*0.7)},${Math.round(tg*0.7)},${Math.round(tb*0.7)})`);
-    bandGrad.addColorStop(1, `rgb(${tr},${tg},${tb})`);
-    fctx.fillStyle = bandGrad;
-    fctx.fillRect(0, 0, COVER_PX, BAND_H);
-    // gold hairline where banner meets illustration
-    fctx.strokeStyle = '#c8a84b';
-    fctx.lineWidth   = Math.round(COVER_PX * 0.0035);
-    fctx.beginPath();
-    fctx.moveTo(0, BAND_H); fctx.lineTo(COVER_PX, BAND_H); fctx.stroke();
-
-    // Text colour follows banner luminance (robust for light-sky books too)
-    const bandLum   = 0.299*tr + 0.587*tg + 0.114*tb;
-    const onBand    = bandLum < 140 ? '#f6efdd' : '#2a1608';
-    const onBandSub = bandLum < 140 ? 'rgba(246,239,221,0.9)' : 'rgba(42,22,8,0.85)';
-    const bandShadow = bandLum < 140 ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.5)';
-
-    // ── Title text in the banner (Frank Ruhl Libre, RTL, centred) ────────────────
-    const centreX = COVER_PX / 2;
-    fctx.textAlign   = 'center';
-    fctx.direction   = 'rtl';
-
+    fctx.textAlign = 'center';
+    fctx.direction = 'rtl';
     if (book.childName) {
-      const nameFs = Math.round(COVER_PX * 0.058);
-      fctx.shadowColor = bandShadow;
-      fctx.shadowBlur  = Math.round(COVER_PX * 0.006);
-      fctx.font        = `700 ${nameFs}px FrankRuhlLibre, "Arial Hebrew", sans-serif`;
-      fctx.fillStyle   = onBand;
-      const nameY = Math.round(BAND_H * 0.52);
+      const nameFs = Math.round(COVER_W_PX * 0.075);
+      const nameY = Math.round(COVER_H_PX * 0.11);
+      fctx.shadowColor = 'rgba(20,8,0,0.5)';
+      fctx.shadowBlur = Math.round(COVER_W_PX * 0.018);
+      fctx.font = `700 ${nameFs}px FrankRuhlLibre, "Arial Hebrew", sans-serif`;
+      fctx.fillStyle = '#fbf5e6';
       fctx.fillText(book.childName, centreX, nameY);
-
-      // gold rule under the name
-      fctx.shadowBlur  = 0;
-      fctx.strokeStyle = '#c8a84b';
-      fctx.lineWidth   = Math.round(COVER_PX * 0.0025);
-      const ruleW = COVER_PX * 0.26;
-      const ruleY = nameY + Math.round(nameFs * 0.35);
-      fctx.beginPath();
-      fctx.moveTo(centreX - ruleW/2, ruleY); fctx.lineTo(centreX + ruleW/2, ruleY); fctx.stroke();
-
       if (title) {
-        const titleFs = Math.round(COVER_PX * 0.030);
-        fctx.shadowColor = bandShadow;
-        fctx.shadowBlur  = Math.round(COVER_PX * 0.005);
-        fctx.font        = `400 ${titleFs}px FrankRuhlLibre, "Arial Hebrew", sans-serif`;
-        fctx.fillStyle   = onBandSub;
-        fctx.fillText(title, centreX, ruleY + Math.round(titleFs * 1.5));
+        const titleFs = Math.round(COVER_W_PX * 0.035);
+        fctx.font = `400 ${titleFs}px FrankRuhlLibre, "Arial Hebrew", sans-serif`;
+        fctx.fillStyle = '#e3c37c';
+        fctx.fillText(title, centreX, nameY + Math.round(titleFs * 1.75));
       }
     }
     fctx.shadowBlur = 0;
@@ -2111,27 +2251,27 @@ async function generateCoverPDF(bookId, options = {}) {
   saveDebug(debugDir, 'cover-front.jpg', frontJpeg);
 
   // ═══ PAGE 2 — BACK (cream, logo, dedication), full-bleed square ══════════════
-  const backCanvas = createCanvas(COVER_PX, COVER_PX);
+  const backCanvas = createCanvas(COVER_W_PX, COVER_H_PX);
   const bctx       = backCanvas.getContext('2d');
   {
     bctx.fillStyle = '#fdf8f0';
-    bctx.fillRect(0, 0, COVER_PX, COVER_PX);
+    bctx.fillRect(0, 0, COVER_W_PX, COVER_H_PX);
 
     // Double gold border (inside the bleed zone, safe margins)
     bctx.strokeStyle = '#c8a84b';
     bctx.lineWidth   = Math.round(1.2 * mm2px);
     const b1 = 10 * mm2px;
-    bctx.strokeRect(b1, b1, COVER_PX - b1 * 2, COVER_PX - b1 * 2);
+    bctx.strokeRect(b1, b1, COVER_W_PX - b1 * 2, COVER_H_PX - b1 * 2);
     bctx.lineWidth = Math.round(0.5 * mm2px);
     const b2 = 14 * mm2px;
-    bctx.strokeRect(b2, b2, COVER_PX - b2 * 2, COVER_PX - b2 * 2);
+    bctx.strokeRect(b2, b2, COVER_W_PX - b2 * 2, COVER_H_PX - b2 * 2);
 
     // Logo — centred, upper third
     if (logo) {
       const logoW   = Math.round(COVER_PX * 0.32);
       const logoH   = Math.round(logo.h * (logoW / logo.w));
       const logoX   = (COVER_PX - logoW) / 2;
-      const logoY   = COVER_PX * 0.30 - logoH / 2;
+      const logoY   = COVER_H_PX * BACK_LOGO_Y - logoH / 2;
       const logoImg = new Image();
       logoImg.src   = logo.buffer;
       bctx.drawImage(logoImg, logoX, logoY, logoW, logoH);
@@ -2155,17 +2295,17 @@ async function generateCoverPDF(bookId, options = {}) {
     const dedicFsPx = Math.round(COVER_PX * 0.042);
     bctx.fillStyle = '#2c1a0e';
     bctx.font = `400 ${dedicFsPx}px Arial Unicode MS, Arial, sans-serif`;
-    bctx.fillText('ספר זה נכתב במיוחד עבור', centreX, COVER_PX * 0.55);
+    bctx.fillText('ספר זה נכתב במיוחד עבור', centreX, COVER_H_PX * BACK_DEDIC_Y);
     if (book.childName) {
       bctx.font = `600 ${Math.round(dedicFsPx * 1.15)}px Arial Unicode MS, Arial, sans-serif`;
-      bctx.fillText(book.childName, centreX, COVER_PX * 0.55 + dedicFsPx * 1.6);
+      bctx.fillText(book.childName, centreX, COVER_H_PX * BACK_DEDIC_Y + dedicFsPx * 1.6);
     }
 
     // lifebooksil.com — small, near bottom
     const domainFsPx = Math.round(COVER_PX * 0.026);
     bctx.font      = `400 ${domainFsPx}px Arial Unicode MS, Arial, sans-serif`;
     bctx.fillStyle = '#a08060';
-    bctx.fillText('lifebooksil.com', centreX, COVER_PX * 0.70);
+    bctx.fillText('lifebooksil.com', centreX, COVER_H_PX * BACK_DOMAIN_Y);
   }
   const backJpeg = backCanvas.toBuffer('image/jpeg', { quality: 0.90 });
   saveDebug(debugDir, 'cover-back.jpg', backJpeg);
@@ -2173,7 +2313,7 @@ async function generateCoverPDF(bookId, options = {}) {
   // ── Build TWO-page PDF (page 1 = front, page 2 = back) ───────────────────────
   const outputPath = path.join(OUTPUT_DIR, `${bookId}-cover.pdf`);
   const doc = new PDFDocument({
-    size:          [COVER_PT, COVER_PT],
+    size:          [COVER_W_PT, COVER_H_PT],
     margin:        0,
     autoFirstPage: true,
     info: {
@@ -2185,9 +2325,9 @@ async function generateCoverPDF(bookId, options = {}) {
 
   const writeStream = fs.createWriteStream(outputPath);
   doc.pipe(writeStream);
-  doc.image(frontJpeg, 0, 0, { width: COVER_PT, height: COVER_PT });   // page 1 — front
-  doc.addPage({ size: [COVER_PT, COVER_PT], margin: 0 });
-  doc.image(backJpeg,  0, 0, { width: COVER_PT, height: COVER_PT });   // page 2 — back
+  doc.image(frontJpeg, 0, 0, { width: COVER_W_PT, height: COVER_H_PT });   // page 1 — front
+  doc.addPage({ size: [COVER_W_PT, COVER_H_PT], margin: 0 });
+  doc.image(backJpeg,  0, 0, { width: COVER_W_PT, height: COVER_H_PT });   // page 2 — back
   doc.end();
   await new Promise((resolve, reject) => {
     writeStream.on('finish', resolve);
@@ -2196,12 +2336,12 @@ async function generateCoverPDF(bookId, options = {}) {
 
   const fileSizeMB = (fs.statSync(outputPath).size / 1024 / 1024).toFixed(1);
   const totalSec   = ((Date.now() - globalStart) / 1000).toFixed(1);
-  console.log(`[cover-pdf] ── DONE ── ${totalSec}s | 2 pages | ${COVER_MM.toFixed(1)}×${COVER_MM.toFixed(1)}mm each | ${fileSizeMB}MB`);
+  console.log(`[cover-pdf] ── DONE ── ${totalSec}s | 2 pages | ${COVER_W_MM.toFixed(1)}×${COVER_H_MM.toFixed(1)}mm each | ${fileSizeMB}MB`);
   console.log(`[cover-pdf] Output: ${outputPath}`);
 
   return {
     outputPath, pages: 2,
-    widthMM: COVER_MM, heightMM: COVER_MM,
+    widthMM: COVER_W_MM, heightMM: COVER_H_MM,
     frontDebug: path.join(debugDir, 'cover-front.jpg'),
     backDebug:  path.join(debugDir, 'cover-back.jpg'),
     fileSizeMB: parseFloat(fileSizeMB), totalSeconds: parseFloat(totalSec),
@@ -2209,4 +2349,7 @@ async function generateCoverPDF(bookId, options = {}) {
 }
 
 module.exports = { generatePrintPDF, generateCoverPDF,
-  __test: { computeSpreadGeometry, computeCharacterBBox } };
+  __test: { computeSpreadGeometry, computeCharacterBBox,
+    buildPDF, coverCropToPage, buildWideTextBgJpeg, renderHebrewTextPng,
+    printBrighten, loadLogoPng,
+    dims: () => ({ PAGE_W_MM, PAGE_H_MM, PAGE_W_PT, PAGE_H_PT, PRINT_W_PX, PRINT_H_PX }) } };
