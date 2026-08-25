@@ -87,6 +87,31 @@ const STYLE_LOCK = {
     " Absolutely NO text, NO letters, NO words, NO writing, NO signs with writing, NO labels, NO logos anywhere in the illustration. Any signs, books or papers in the scene must be blank.",
 };
 
+// ── Language separation ─────────────────────────────────────────────────────
+// A Hebrew book asks one model to fill two fields in two different languages in
+// the same JSON — story text in Hebrew, imagePrompt in English — and the model
+// sometimes lets one bleed into the other ("...הוא יכול conquer the world").
+// This rule states the separation as the rule itself rather than as an aside.
+//
+// It deliberately contains no Latin story vocabulary. The previous wording
+// illustrated the rule with the very word it was forbidding, and a book was
+// then found containing exactly that word — a negative example is still an
+// example. Only the JSON field names appear in Latin, and they must.
+const HEBREW_LANGUAGE_RULE =
+  'כתוב את כל הסיפור בעברית בלבד. חוק הפרדת שפות, והוא חוק ברזל: השדות "title", "subtitle" ו-"text" ' +
+  'נכתבים בעברית בלבד, ואסור שתופיע בהם ולו אות לטינית אחת. מילה לועזית או שם לועזי — כתוב אותם בתעתיק עברי. ' +
+  'השדה "imagePrompt" הוא היחיד שנכתב באנגלית, תמיד. שני סוגי השדות יושבים באותו JSON אך בשתי שפות שונות — ' +
+  'לעולם אל תערבב ביניהם.';
+
+// Latin words inside text a Hebrew-reading customer will see. The child's own
+// name is allowed through: a parent who types their child's name in Latin has
+// not made a mistake, and their book must never be judged a failure for it.
+function findLatinIntrusions(text, allowedWords = []) {
+  const words = String(text || "").match(/[A-Za-z]+(?:['\u2019][A-Za-z]+)?/g) || [];
+  const allowed = new Set(allowedWords.filter(Boolean).map(w => w.toLowerCase()));
+  return words.filter(w => !allowed.has(w.toLowerCase()));
+}
+
 const STYLE_NAME_MAP = {
   "soft storybook": "watercolor",
   "watercolor": "watercolor",
@@ -1807,7 +1832,7 @@ async function buildTemplateStoryPrompt(templateSlug, inputs, characterSummary, 
   // Prepend writing rules automatically — no {{writingRules}} needed in any skeleton
   const langRule = (bookLanguage || "he") === "en"
     ? "- Language: Write the ENTIRE story in English only."
-    : '- Language: כתוב את כל הסיפור בעברית בלבד — ללא מילים באנגלית (למשל: כתוב "התרגשות" ולא "excitement!"). שמות פרטיים אפשר לשמור באותיות לטיניות.\n- כתוב עברית טבעית ומדוברת כפי שהורה ישראלי מקריא לילדו; הימנע מתרגומי־מילה מאנגלית וממבנים לא טבעיים (כמו \'זה יומנו\').';
+    : `- Language: ${HEBREW_LANGUAGE_RULE}\n- כתוב עברית טבעית ומדוברת כפי שהורה ישראלי מקריא לילדו; הימנע מתרגומי־מילה ומצירופים לא טבעיים (כמו \'זה יומנו\').`;
   const writingRules = `כללי כתיבה חשובים:\n- בדיוק 12 עמודים — לא פחות, לא יותר.\n- כל עמוד: לפחות 2–3 משפטים. אסור לכתוב משפט יחיד.\n- התאם לגיל ${inputs.childAge || ""}: ילד צעיר (עד 4) — לפחות 2–3 משפטים, קצרים וקצביים עם חזרות (קצרים, אך לא פחות משניים); ילד מבוגר יותר (5+) — עושר רגשי ומילולי רב יותר.\n- כתוב מה הילד מרגיש וחושב — לא רק מה שקורה. הטקסט חי ורגשי.\n- השתמש בשפה חמה, קצבית, ילדותית — שאלות, קריאות, חזרות מוזיקליות.\n- שם הילד מופיע באופן טבעי לאורך הסיפור — לא בכל משפט, לא רק בהתחלה.\n- אין מוסר השכל מפורש. אין נאומים. הרגש עולה מהסיפור עצמו.\n${langRule}`;
   const prompt = `${writingRules}\n\n${filledSkeleton}`;
 
@@ -1936,18 +1961,25 @@ app.post("/api/books/:bookId/generate-full", async (req, res) => {
         if (mode !== 'template') {
           console.log(`generate-full [${bookId}]: STEP 2 mode=custom`);
           const writingRules = `כללי כתיבה חשובים:\n- בדיוק 12 עמודים — לא פחות, לא יותר.\n- כל עמוד: לפחות 2–3 משפטים. אסור לכתוב משפט יחיד.\n- התאם לגיל ${childAge}: ילד צעיר (עד 4) — לפחות 2–3 משפטים, קצרים וקצביים עם חזרות (קצרים, אך לא פחות משניים); ילד מבוגר יותר (5+) — עושר רגשי ומילולי רב יותר.\n- כתוב מה הילד מרגיש וחושב — לא רק מה שקורה. הטקסט חי ורגשי.\n- השתמש בשפה חמה, קצבית, ילדותית — שאלות, קריאות, חזרות מוזיקליות.\n- שם הילד מופיע באופן טבעי לאורך הסיפור — לא בכל משפט, לא רק בהתחלה.\n- אין מוסר השכל מפורש. אין נאומים. הרגש עולה מהסיפור עצמו.`;
-          storyPrompt = `You are a premium personalized children's book writer.\n\n${writingRules}\n\nChild name: ${sanitizeBrandTerms(childName)}\nChild age: ${childAge}\nChild gender: ${childGender}\nStory direction: ${sanitizeBrandTerms(storyIdea)}\nIllustration style: ${safeStyle}\n\nCharacter summary:\n${sanitizeBrandTerms(characterSummary)}\n\nCharacter consistency instructions:\n${sanitizeBrandTerms(promptCore)}\n\nReturn ONLY JSON:\n{\n  "title": "string",\n  "subtitle": "string",\n  "pages": [\n    {\n      "text": "string",\n      "imagePrompt": "string"\n    }\n  ]\n}\n\nRules:\n- Exactly 12 story pages\n- Each page text must be 35-70 words\n- The child must clearly be the hero\n- imagePrompt must describe the same illustrated storybook character consistently across all pages — same face, hair, and features in every scene. Never use "the child", "boy", or "girl" — instead use "the young storybook hero" (for a boy) or "the young storybook heroine" (for a girl). Always describe an illustrated character, never a real person or photograph.\n- Each imagePrompt must be written FROM THAT PAGE'S OWN TEXT. Name the specific action happening in that page's sentences, the place it happens, every object and prop the text mentions, and every other character present (animals, friends, family) with a brief visual description. If an imagePrompt could be swapped with another page's imagePrompt without anyone noticing, it is wrong — rewrite it.\n- Vary the camera across the twelve pages. Begin every imagePrompt with exactly one of these framings: "Wide establishing shot", "Full-body shot", "Medium shot", or "Close-up". Across the twelve pages use "Wide establishing shot" at least three times, "Full-body shot" at least three times, and "Close-up" no more than twice. Choose the framing that the page's own moment calls for — a quiet bedtime page, a running page, and a group page must not be framed alike.\n- No page numbers inside text\n- No brand names\n- Do not mention copyrighted characters or logos\n- Language: ${bookLanguage === "en" ? "Write the ENTIRE story in English only." : 'כתוב את כל הסיפור בעברית בלבד — ללא מילים באנגלית (למשל: כתוב "התרגשות" ולא "excitement!"). שמות פרטיים אפשר לשמור באותיות לטיניות.'} Keep imagePrompt always in English for image generation.`;
+          storyPrompt = `You are a premium personalized children's book writer.\n\n${writingRules}\n\nChild name: ${sanitizeBrandTerms(childName)}\nChild age: ${childAge}\nChild gender: ${childGender}\nStory direction: ${sanitizeBrandTerms(storyIdea)}\nIllustration style: ${safeStyle}\n\nCharacter summary:\n${sanitizeBrandTerms(characterSummary)}\n\nCharacter consistency instructions:\n${sanitizeBrandTerms(promptCore)}\n\nReturn ONLY JSON:\n{\n  "title": "string",\n  "subtitle": "string",\n  "pages": [\n    {\n      "text": "string",\n      "imagePrompt": "string"\n    }\n  ]\n}\n\nRules:\n- Exactly 12 story pages\n- Each page text must be 35-70 words\n- The child must clearly be the hero\n- imagePrompt must describe the same illustrated storybook character consistently across all pages — same face, hair, and features in every scene. Never use "the child", "boy", or "girl" — instead use "the young storybook hero" (for a boy) or "the young storybook heroine" (for a girl). Always describe an illustrated character, never a real person or photograph.\n- Each imagePrompt must be written FROM THAT PAGE'S OWN TEXT. Name the specific action happening in that page's sentences, the place it happens, every object and prop the text mentions, and every other character present (animals, friends, family) with a brief visual description. If an imagePrompt could be swapped with another page's imagePrompt without anyone noticing, it is wrong — rewrite it.\n- Vary the camera across the twelve pages. Begin every imagePrompt with exactly one of these framings: "Wide establishing shot", "Full-body shot", "Medium shot", or "Close-up". Across the twelve pages use "Wide establishing shot" at least three times, "Full-body shot" at least three times, and "Close-up" no more than twice. Choose the framing that the page's own moment calls for — a quiet bedtime page, a running page, and a group page must not be framed alike.\n- No page numbers inside text\n- No brand names\n- Do not mention copyrighted characters or logos\n- Language: ${bookLanguage === "en" ? "Write the ENTIRE story in English only." : HEBREW_LANGUAGE_RULE} Keep imagePrompt always in English for image generation.`;
         }
 
         // ── OpenAI call (identical for both modes) — up to 2 retries if <12 pages ──
         // Suffix appended to every story prompt to reinforce 12-page requirement
         const pageSuffix = `\n\n⚠️ MANDATORY: The "pages" array in your JSON response MUST contain EXACTLY 12 objects — no more, no fewer. Count them before you respond.`;
 
+        // When the model omits a title or subtitle these defaults are what the
+        // customer reads on the cover, so in a Hebrew book they must be Hebrew.
+        // They were English for every book, which put English on the cover of
+        // roughly a quarter of the Hebrew books ever generated.
+        const defaultTitle    = isHebrewBook ? `ההרפתקה הקסומה של ${childName}` : `The Magical Adventure of ${childName}`;
+        const defaultSubtitle = isHebrewBook ? "סיפור שבו את/ה הגיבור/ה" : "A story where you are the hero";
+
         const parseStoryResponse = (raw) => {
           const data = safeJsonParse(raw, {});
           return {
-            title:    sanitizeBrandTerms(data.title    || `The Magical Adventure of ${childName}`),
-            subtitle: sanitizeBrandTerms(data.subtitle || "A story where you are the hero"),
+            title:    sanitizeBrandTerms(data.title    || defaultTitle),
+            subtitle: sanitizeBrandTerms(data.subtitle || defaultSubtitle),
             pages:    Array.isArray(data.pages)
               ? data.pages.slice(0, 12).map(p => ({
                   text:        sanitizeBrandTerms(String(p.text        || "").trim()),
@@ -1957,9 +1989,27 @@ app.post("/api/books/:bookId/generate-full", async (req, res) => {
           };
         };
 
+        // Language gate. Unlike the framing gate this one BLOCKS: English inside
+        // a Hebrew story is visible to the customer on the page, so a retry is
+        // worth its two seconds. Deterministic and free — no extra image calls.
+        const checkStoryLanguage = (candidate) => {
+          if (!isHebrewBook) return [];
+          const allowed = String(childName).split(/\s+/);
+          const found = [];
+          const scan = (where, t) => findLatinIntrusions(t, allowed).forEach(w => found.push(`${where}:"${w}"`));
+          scan("title", candidate.title);
+          scan("subtitle", candidate.subtitle);
+          candidate.pages.forEach((p, i) => scan(`page${i}`, p.text));
+          return found;
+        };
+
         try {
           let generatedBook = null;
           const MAX_STORY_ATTEMPTS = 3;
+          // Best candidate seen so far, so a retry can only ever improve what
+          // ships: a short book outranks any language slip, and among equals the
+          // one with fewer Latin words wins.
+          let best = null, bestScore = Infinity;
           for (let attempt = 1; attempt <= MAX_STORY_ATTEMPTS; attempt++) {
             console.log(`generate-full [${bookId}]: STEP 2 attempt ${attempt}/${MAX_STORY_ATTEMPTS}`);
             const completion = await openai.chat.completions.create({
@@ -1970,17 +2020,28 @@ app.post("/api/books/:bookId/generate-full", async (req, res) => {
             });
             const raw = completion.choices?.[0]?.message?.content || "{}";
             const candidate = parseStoryResponse(raw);
-            if (candidate.pages.length === 12) {
+            const intrusions = checkStoryLanguage(candidate);
+
+            const score = (12 - Math.min(candidate.pages.length, 12)) * 100 + intrusions.length;
+            if (score < bestScore) { bestScore = score; best = candidate; }
+
+            if (candidate.pages.length === 12 && intrusions.length === 0) {
               generatedBook = candidate;
-              console.log(`generate-full [${bookId}]: STEP 2 — got 12 pages on attempt ${attempt}`);
+              console.log(`generate-full [${bookId}]: STEP 2 — got 12 pages, Hebrew clean, on attempt ${attempt}`);
               break;
             }
-            console.warn(`generate-full [${bookId}]: ⚠️ STEP 2 attempt ${attempt} — got ${candidate.pages.length}/12 pages, retrying...`);
-            if (attempt === MAX_STORY_ATTEMPTS) {
-              // Best effort: use whatever we got
-              generatedBook = candidate;
-              console.warn(`generate-full [${bookId}]: ⚠️ STEP 2 FINAL — only ${candidate.pages.length}/12 pages after ${MAX_STORY_ATTEMPTS} attempts. Building partial book.`);
+            if (candidate.pages.length !== 12) {
+              console.warn(`generate-full [${bookId}]: ⚠️ STEP 2 attempt ${attempt} — got ${candidate.pages.length}/12 pages, retrying...`);
             }
+            if (intrusions.length) {
+              console.warn(`generate-full [${bookId}]: ⚠️ STEP 2 attempt ${attempt} — GATE language: ${intrusions.length} Latin word(s) in Hebrew story — ${intrusions.join(", ")} — retrying...`);
+            }
+          }
+
+          if (!generatedBook) {
+            generatedBook = best;
+            const left = checkStoryLanguage(generatedBook);
+            console.error(`generate-full [${bookId}]: ❌ STEP 2 FINAL FAILURE after ${MAX_STORY_ATTEMPTS} attempts — shipping the best of the three: ${generatedBook.pages.length}/12 pages, ${left.length} Latin word(s)${left.length ? ` — ${left.join(", ")}` : ""}`);
           }
 
           await updateBookField(bookId, { generatedBook });
