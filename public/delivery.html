@@ -136,9 +136,10 @@
   <a class="nav-brand" href="index.html">
     <img src="assets/branding/lifebook-logo.webp" alt="Lifebook" style="height:54px;width:auto;display:block"/>
   </a>
-  <!-- These two rows are written by JS, so i18nToggle cannot restore them from
-       data-i18n — re-render them after the toggle has swapped the dictionary. -->
-  <button id="langToggleBtn" onclick="i18nToggle(); setTimeout(function(){ if (typeof renderPurchaseRows === 'function') renderPurchaseRows(); }, 0)" style="background:none;border:1.5px solid #c8922a;color:#c8922a;border-radius:50px;padding:6px 16px;font-family:'Assistant',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">English</button>
+  <!-- Several values here are written by JS, so i18nToggle can neither translate
+       them nor restore them from data-i18n — re-render them after the toggle has
+       swapped the dictionary. -->
+  <button id="langToggleBtn" onclick="i18nToggle(); setTimeout(function(){ if (typeof renderI18nDependent === 'function') renderI18nDependent(); }, 0)"style="background:none;border:1.5px solid #c8922a;color:#c8922a;border-radius:50px;padding:6px 16px;font-family:'Assistant',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">English</button>
 </nav>
 
 <main class="shell">
@@ -222,7 +223,7 @@
           <strong data-i18n="dlCardTitle">Download your storybook PDF</strong>
           <span data-i18n="dlCardDesc">High quality · Print-ready · Cover + all pages</span>
         </div>
-        <button class="btn-gold" id="dlBtn">⬇ Download PDF</button>
+        <button class="btn-gold" id="dlBtn" data-i18n="deliveryDownloadBtn">⬇ Download PDF</button>
         <div class="pdf-progress-wrap" id="pdfProg">
           <div class="pdf-st" id="pdfSt">Preparing...</div>
           <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
@@ -414,6 +415,39 @@ function renderPurchaseRows() {
 // inline handler can only reach this function if it is published explicitly.
 window.renderPurchaseRows = renderPurchaseRows;
 
+// ── Rows that JS owns, re-runnable ──────────────────────────────────────────
+// The book's real title and subtitle are written into elements that also carry
+// data-i18n, because they need a sensible placeholder before the book loads.
+// The side effect was that switching language re-applied the dictionary and
+// replaced the customer's actual title with the generic "Your Magical Book".
+// Dropping data-i18n the moment the real value arrives makes the toggle leave
+// these alone; the status line has no data-i18n at all and simply needs to be
+// written again in the new language.
+function renderBookHeadings() {
+  if (!book) return;
+  const title = book.generatedBook?.title || dt('yourMagicalBook', 'הספר הקסום שלכם');
+  const sub   = book.generatedBook?.subtitle || dt('personalizedStorybook', 'ספר אישי');
+
+  const hero = $('heroBannerTitle'), sideT = $('sideTitleEl'), sideS = $('sideSubEl');
+  if (hero)  { hero.textContent  = '🎉 ' + title; hero.removeAttribute('data-i18n'); }
+  if (sideT) { sideT.textContent = title;         sideT.removeAttribute('data-i18n'); }
+  if (sideS) { sideS.textContent = sub;           sideS.removeAttribute('data-i18n'); }
+
+  const st = $('infoStatus');
+  if (st) st.textContent = book.purchaseUnlocked
+    ? dt('paidStatus', '✅ שולם')
+    : dt('pendingStatus', 'ממתין');
+}
+
+// Everything on the page that a language toggle cannot fix by itself, in one
+// call: headings, the purchase rows, and the spread label under the viewer.
+function renderI18nDependent() {
+  renderBookHeadings();
+  renderPurchaseRows();
+  if (spreads && spreads.length) renderSpread(idx);
+}
+window.renderI18nDependent = renderI18nDependent;
+
 async function init() {
   book = await loadBook();
   if (!book) return;
@@ -422,12 +456,8 @@ async function init() {
   const sub   = book.generatedBook?.subtitle || '';
   const pages = book.generatedBook?.pages || [];
 
-  $('heroBannerTitle').textContent = '🎉 ' + title;
-  $('sideTitleEl').textContent = title;
-  $('sideSubEl').textContent   = sub || (typeof i18nT === 'function' ? i18nT('personalizedStorybook') : 'Personalized storybook');
-  $('infoChild').textContent   = book.childName || '—';
-  $('infoPages').textContent   = pages.length + (typeof i18nT === 'function' ? i18nT('pagesCountSuffix') : ' pages');
-  $('infoStatus').textContent  = book.purchaseUnlocked ? (typeof i18nT === 'function' ? i18nT('paidStatus') : '✅ Paid') : (typeof i18nT === 'function' ? i18nT('pendingStatus') : 'Pending');
+  $('infoChild').textContent = book.childName || '—';
+  renderBookHeadings();
 
   // Fire-and-forget: the page must render fully even if this call fails, so it
   // is deliberately not awaited and its failure is swallowed. The defaults
