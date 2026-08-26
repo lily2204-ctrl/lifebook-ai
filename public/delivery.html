@@ -136,7 +136,9 @@
   <a class="nav-brand" href="index.html">
     <img src="assets/branding/lifebook-logo.webp" alt="Lifebook" style="height:54px;width:auto;display:block"/>
   </a>
-  <button id="langToggleBtn" onclick="i18nToggle()" style="background:none;border:1.5px solid #c8922a;color:#c8922a;border-radius:50px;padding:6px 16px;font-family:'Assistant',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">English</button>
+  <!-- These two rows are written by JS, so i18nToggle cannot restore them from
+       data-i18n — re-render them after the toggle has swapped the dictionary. -->
+  <button id="langToggleBtn" onclick="i18nToggle(); setTimeout(function(){ if (typeof renderPurchaseRows === 'function') renderPurchaseRows(); }, 0)" style="background:none;border:1.5px solid #c8922a;color:#c8922a;border-radius:50px;padding:6px 16px;font-family:'Assistant',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">English</button>
 </nav>
 
 <main class="shell">
@@ -184,7 +186,9 @@
       <div class="info-rows">
         <div class="info-row"><span class="lbl" data-i18n="labelChild">Child</span><span id="infoChild">—</span></div>
         <div class="info-row"><span class="lbl" data-i18n="labelPages">Pages</span><span id="infoPages">—</span></div>
-        <div class="info-row"><span class="lbl" data-i18n="labelFormat">Format</span><span data-i18n="digitalPdf">Digital PDF</span></div>
+        <!-- Was hardcoded "Digital PDF" for every order, including printed and
+             bundle ones. Filled from the real order — see applyPurchaseFormat. -->
+        <div class="info-row"><span class="lbl" data-i18n="labelFormat">Format</span><span id="infoFormat" data-i18n="digitalPdf">Digital PDF</span></div>
         <div class="info-row"><span class="lbl" data-i18n="labelStatus">Status</span><span id="infoStatus">—</span></div>
       </div>
     </div>
@@ -349,6 +353,67 @@ async function loadBook() {
   return (await r.json()).book;
 }
 
+// ── What the customer actually bought ────────────────────────────────────────
+// Page counts match the checkout summary and come from the same measurement of
+// real files: the digital PDF is the story pages plus cover, dedication and
+// back cover; the print interior is a fixed 28 (Bookpod needs a multiple of 4)
+// with the cover as a separate file.
+const DIGITAL_EXTRA_PAGES  = 3;
+const PRINT_INTERIOR_PAGES = 28;
+
+// i18n with a guaranteed fallback — i18nT returns the key itself when a string
+// is missing, which would print "fmtBundleName" at a paying customer.
+function dt(key, fallback) {
+  if (typeof i18nT !== 'function') return fallback;
+  const v = i18nT(key);
+  return (!v || v === key) ? fallback : v;
+}
+
+// Held so a language toggle can re-render without a second network call.
+let purchasedFormat = 'digital';
+let storyPageCount  = 0;
+
+async function applyPurchaseFormat(storyPages) {
+  storyPageCount = storyPages || 0;
+  try {
+    const r = await fetch(API+'/api/books/'+bookId+'/purchase');
+    if (r.ok) {
+      const d = await r.json();
+      if (d && d.format && d.format !== 'none') purchasedFormat = d.format;
+    }
+  } catch (e) {
+    console.warn('purchase format lookup failed, showing digital:', e);
+  }
+  renderPurchaseRows();
+}
+
+function renderPurchaseRows() {
+  const format = purchasedFormat;
+  const storyPages = storyPageCount;
+  const digitalPages = storyPages ? storyPages + DIGITAL_EXTRA_PAGES : 0;
+  const digitalCount = digitalPages
+    ? dt('pagesDigital', '{n} עמודים בקובץ').replace('{n}', digitalPages) : '—';
+  const printCount   = dt('pagesPrint', '{n} עמודי פנים + כריכה').replace('{n}', PRINT_INTERIOR_PAGES);
+
+  const fmtEl   = $('infoFormat');
+  const pagesEl = $('infoPages');
+
+  if (format === 'printed') {
+    if (fmtEl)   { fmtEl.textContent = dt('fmtPrintedName', 'ספר מודפס'); fmtEl.removeAttribute('data-i18n'); }
+    if (pagesEl) pagesEl.textContent = printCount;
+  } else if (format === 'bundle') {
+    if (fmtEl)   { fmtEl.textContent = dt('fmtBundleName', 'חבילה: דיגיטלי + מודפס'); fmtEl.removeAttribute('data-i18n'); }
+    // Bundle buys both products, so both counts are true and both are shown.
+    if (pagesEl) pagesEl.textContent = digitalCount + ' · ' + printCount;
+  } else {
+    if (fmtEl)   { fmtEl.textContent = dt('fmtDigitalName', 'ספר דיגיטלי'); fmtEl.removeAttribute('data-i18n'); }
+    if (pagesEl) pagesEl.textContent = digitalCount;
+  }
+}
+// This script is a module, so nothing in it is global — the language toggle's
+// inline handler can only reach this function if it is published explicitly.
+window.renderPurchaseRows = renderPurchaseRows;
+
 async function init() {
   book = await loadBook();
   if (!book) return;
@@ -363,6 +428,11 @@ async function init() {
   $('infoChild').textContent   = book.childName || '—';
   $('infoPages').textContent   = pages.length + (typeof i18nT === 'function' ? i18nT('pagesCountSuffix') : ' pages');
   $('infoStatus').textContent  = book.purchaseUnlocked ? (typeof i18nT === 'function' ? i18nT('paidStatus') : '✅ Paid') : (typeof i18nT === 'function' ? i18nT('pendingStatus') : 'Pending');
+
+  // Fire-and-forget: the page must render fully even if this call fails, so it
+  // is deliberately not awaited and its failure is swallowed. The defaults
+  // already on the page are the digital ones, which is the common case.
+  applyPurchaseFormat(pages.length);
 
   if (book.coverImage) { $('coverImg3d').src = book.coverImage; }
 
