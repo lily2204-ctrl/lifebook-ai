@@ -43,7 +43,42 @@ document.addEventListener("DOMContentLoaded", async function() {
     if (nameEl)  nameEl.textContent  = b.childName         || "-";
     if (ageEl)   ageEl.textContent   = b.childAge          || "-";
     if (styleEl) styleEl.textContent = b.illustrationStyle || "-";
-    if (pagesEl) pagesEl.textContent = String((b.generatedBook && b.generatedBook.pages ? b.generatedBook.pages.length : 0)) + (typeof i18nT === "function" ? i18nT("pageCountSuffix") : " pages");
+    storyPageCount = (b.generatedBook && b.generatedBook.pages) ? b.generatedBook.pages.length : 0;
+    renderPageCount();
+  }
+
+  // ── PAGES row — what the customer actually receives, per format ─────────────
+  // The two products are not the same length and the row used to show only the
+  // story-page count, which understated both. Counted from real output files,
+  // not from the spec:
+  //   digital PDF  — 15 pages: cover + 12 story + dedication + back cover.
+  //                  Verified by intercepting a real generated PDF blob for
+  //                  book 5cde1a83 (jsPDF getNumberOfPages = 15).
+  //   print interior — 28 pages, verified identical across all three completed
+  //                  print files in print-pdf/output/. Bookpod requires a
+  //                  multiple of 4, so this is fixed regardless of story length.
+  //   print cover  — a separate 2-page file (front + back), hence "+ כריכה"
+  //                  rather than counting it into the 28.
+  var PRINT_INTERIOR_PAGES = 28;
+  var DIGITAL_EXTRA_PAGES  = 3; // cover + dedication + back cover
+  var storyPageCount = 0;
+
+  function renderPageCount() {
+    if (!pagesEl) return;
+    var isPrint = (selectedFormat === "printed" || selectedFormat === "bundle");
+    if (isPrint) {
+      pagesEl.textContent = (typeof i18nT === "function" && i18nT("pagesPrint") !== "pagesPrint")
+        ? i18nT("pagesPrint").replace("{n}", PRINT_INTERIOR_PAGES)
+        : PRINT_INTERIOR_PAGES + " עמודי פנים + כריכה";
+    } else {
+      // Fall back to the raw story count until the book has loaded.
+      var total = storyPageCount ? storyPageCount + DIGITAL_EXTRA_PAGES : 0;
+      pagesEl.textContent = total
+        ? ((typeof i18nT === "function" && i18nT("pagesDigital") !== "pagesDigital")
+            ? i18nT("pagesDigital").replace("{n}", total)
+            : total + " עמודים בקובץ")
+        : "—";
+    }
   }
 
   // ── Format selection + cart link ──────────────────────────────────────────
@@ -84,6 +119,7 @@ document.addEventListener("DOMContentLoaded", async function() {
       if (href) payBtn.href = href;
       payBtn.textContent = ctaLabel(price);
     }
+    renderPageCount();
   }
 
   // Mark unconfigured formats as disabled (variant missing) so nothing broken is shown.

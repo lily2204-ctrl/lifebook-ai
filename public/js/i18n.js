@@ -94,6 +94,9 @@ const I18N = {
     statusRedirecting: 'מעביר...',
     statusPreparingPhoto: 'מכין תמונה...',
     pageCountSuffix: ' עמודים',
+    // Counted from real output files, not from the spec — see checkout.js.
+    pagesDigital: '{n} עמודים בקובץ',
+    pagesPrint: '{n} עמודי פנים + כריכה',
     // Crop page
     chooseAnotherPhoto: 'בחרו תמונה אחרת',
     createMyBook: 'צרו את הספר שלי',
@@ -358,6 +361,8 @@ const I18N = {
     statusRedirecting: 'Redirecting...',
     statusPreparingPhoto: 'Preparing photo...',
     pageCountSuffix: ' pages',
+    pagesDigital: '{n} pages in the file',
+    pagesPrint: '{n} interior pages + cover',
     // Crop page
     chooseAnotherPhoto: 'Choose Another Photo',
     createMyBook: 'Create My Book',
