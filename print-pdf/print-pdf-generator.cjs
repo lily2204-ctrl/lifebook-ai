@@ -73,6 +73,9 @@ const PAGE_PT    = PAGE_W_PT;
 const MARGIN_INNER_MM = BLEED_MM + 10;        // 13.2mm from edge → 10mm safe margin
 const MARGIN_OUTER_MM = BLEED_MM + 6;         // 9.2mm from edge → 6mm safe margin
 
+// The single line on the filler pages. See makeStarPage.
+const FILLER_LINE = 'כאן ההרפתקה ממשיכה...';
+
 const OUTPUT_DIR = path.join(__dirname, 'output');
 // DEBUG_DIR is now per-book: path.join(__dirname, 'debug', bookId) — set in generatePrintPDF
 
@@ -1486,7 +1489,49 @@ async function loadLogoPng() {
  * @param {boolean} doubleBorder  If true: draws outer + inner gold rect border (like digital dedication page)
  * @returns Buffer  PNG buffer at 300 DPI
  */
-function renderFramePagePng(textLines, ruleYMms = [], nameLine = null, logo = null, logoYFrac = 0.36, doubleBorder = false) {
+// ─── Four-pointed star, drawn as a path ──────────────────────────────────────
+// This used to be the character '✦' (U+2726) set in a font. None of the four
+// fonts this module registers contains that codepoint — they are Hebrew text
+// faces, and U+2726 lives in Dingbats — so it printed as a .notdef box with
+// "2726" inside it, on the dedication page and on every filler page. Adding a
+// symbol font would only move the dependency; a path cannot go missing.
+//
+// Four concave-sided points, drawn from the centre: each point is a straight
+// line out to the tip and back, with the waist between points pulled in to
+// WAIST of the radius, which is what gives the star its slim sparkle shape.
+function drawStar(ctx, cx, cy, rPx, color, alpha) {
+  const WAIST = 0.26;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle   = color;
+  ctx.beginPath();
+  for (let i = 0; i < 8; i++) {
+    const a = (Math.PI / 4) * i - Math.PI / 2;       // start at the top tip
+    const r = (i % 2 === 0) ? rPx : rPx * WAIST;      // tip, then waist
+    const x = cx + Math.cos(a) * r;
+    const y = cy + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+// The three-star ornament, at one weight shared by the dedication page and the
+// filler pages so the two read as the same book. Sized for paper rather than for
+// a screen: at the delicate weight first drafted, the two outer stars all but
+// vanished in print and the centre one lost its sparkle and read as a plus sign.
+// Centre carries more size and opacity than the flanks, which is the emphasis
+// the old typed line never had.
+function starTrio(yFrac) {
+  return [
+    { xFrac: 0.425, yFrac: yFrac + 0.006, sizeMm: 4.8, alpha: 0.70 },
+    { xFrac: 0.500, yFrac: yFrac,         sizeMm: 6.8, alpha: 0.92 },
+    { xFrac: 0.575, yFrac: yFrac + 0.006, sizeMm: 4.8, alpha: 0.70 },
+  ];
+}
+
+function renderFramePagePng(textLines, ruleYMms = [], nameLine = null, logo = null, logoYFrac = 0.36, doubleBorder = false, stars = null) {
   const { createCanvas, Image } = require('canvas');
   // PX is the page WIDTH and PH the page HEIGHT. Everything measured in mm is
   // unchanged; everything measured as a fraction of the page runs down PH.
@@ -1555,6 +1600,13 @@ function renderFramePagePng(textLines, ruleYMms = [], nameLine = null, logo = nu
     ctx.stroke();
   }
 
+  // Decorative stars — {xFrac, yFrac, sizeMm, alpha}, drawn as paths not glyphs.
+  if (stars) {
+    for (const s of stars) {
+      drawStar(ctx, s.xFrac * PX, s.yFrac * PH, (s.sizeMm / 2) * mm2px, '#c8a84b', s.alpha ?? 0.6);
+    }
+  }
+
   // Text — all via canvas so Hebrew renders correctly
   ctx.textAlign = 'center';
   ctx.direction = 'rtl';
@@ -1610,34 +1662,19 @@ async function buildPDF(book, spreads, outputPath, logo) {
   //   Closing: "נכתב במיוחד עבור [שם]"
   //   Back cover / logo
 
+  // Filler page. The book must be a multiple of 4 for Bookpod, so 0–3 of these
+  // sit before the closing page. It used to be a field of nine typed stars,
+  // which printed as nine .notdef boxes; it is now a quiet page the reader can
+  // actually use, built from the same frame renderer as the dedication so the
+  // two match. Kept sparse on purpose — up to three of these can appear in a row.
   function makeStarPage() {
-    const { createCanvas } = require('canvas');
-    const PX    = PRINT_W_PX;
-    const PH    = PRINT_H_PX;
-    const mm2px = PX / PAGE_W_MM;
-    const canvas = createCanvas(PX, PH);
-    const ctx    = canvas.getContext('2d');
-    ctx.fillStyle = '#fdf8f0';
-    ctx.fillRect(0, 0, PX, PH);
-    ctx.strokeStyle = '#c8a84b';
-    ctx.lineWidth   = 1.0 * mm2px;
-    ctx.strokeRect(10 * mm2px, 10 * mm2px, PX - 20 * mm2px, PH - 20 * mm2px);
-    ctx.lineWidth   = 0.4 * mm2px;
-    ctx.strokeRect(14 * mm2px, 14 * mm2px, PX - 28 * mm2px, PH - 28 * mm2px);
-    const stars = [
-      [0.20, 0.22, 22], [0.78, 0.18, 16], [0.50, 0.12, 30],
-      [0.30, 0.55, 14], [0.70, 0.50, 18], [0.50, 0.52, 36],
-      [0.15, 0.80, 16], [0.85, 0.76, 20], [0.50, 0.85, 24],
-    ];
-    for (const [xF, yF, sizeMm] of stars) {
-      const fsPx = sizeMm * mm2px;
-      const alpha = sizeMm > 25 ? 0.85 : sizeMm > 15 ? 0.55 : 0.35;
-      ctx.font      = `${fsPx}px Arial Unicode MS, Arial, sans-serif`;
-      ctx.fillStyle = `rgba(200,168,75,${alpha})`;
-      ctx.textAlign = 'center';
-      ctx.fillText('✦', xF * PX, yF * PH);
-    }
-    return canvas.toBuffer('image/png');
+    return renderFramePagePng(
+      [
+        { text: FILLER_LINE, fontSize: 5.5, yFrac: 0.80, bold: false, color: '#a08060' },
+      ],
+      [], null, logo, 0.30, true,
+      starTrio(0.585)
+    );
   }
 
   // ── Page 1 (odd=left): הקדשה ─────────────────────────────────────────────────
@@ -1645,10 +1682,10 @@ async function buildPDF(book, spreads, outputPath, logo) {
     [
       { text: title,            fontSize: 12,  yFrac: 0.36, bold: true,  color: '#2c1a0e' },
       { text: subtitle,         fontSize:  7,  yFrac: 0.46, bold: false, color: '#7a5c3a' },
-      { text: '✦  ✦  ✦',       fontSize:  5,  yFrac: 0.56, bold: false, color: '#c8a84b' },
       { text: 'lifebooksil.com',fontSize:  3.5,yFrac: 0.92, bold: false, color: '#b0905a' },
     ],
-    [], null, logo, 0.80, true
+    [], null, logo, 0.80, true,
+    starTrio(0.548)
   ));
 
   // ── Pages 2..: N spreads — text(even=right) then illus(odd=left) ─────────────
@@ -2351,5 +2388,5 @@ async function generateCoverPDF(bookId, options = {}) {
 module.exports = { generatePrintPDF, generateCoverPDF,
   __test: { computeSpreadGeometry, computeCharacterBBox,
     buildPDF, coverCropToPage, buildWideTextBgJpeg, renderHebrewTextPng,
-    printBrighten, loadLogoPng,
+    printBrighten, loadLogoPng, renderFramePagePng, drawStar, starTrio, FILLER_LINE,
     dims: () => ({ PAGE_W_MM, PAGE_H_MM, PAGE_W_PT, PAGE_H_PT, PRINT_W_PX, PRINT_H_PX }) } };
