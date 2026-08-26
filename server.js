@@ -616,6 +616,22 @@ async function listPendingPrintOrders() {
   return (data || []).map(printOrderRowToObj);
 }
 
+// Most recent print order for a book, or null. Used to answer "what did this
+// customer actually buy?" on the delivery page. The webhook detects the format
+// but never writes it to the book row, so print_orders is the only record of
+// it — and it is enough: a row exists only for printed and bundle orders, and
+// it carries the format itself.
+async function getLatestPrintOrderByBookId(bookId) {
+  const { data, error } = await supabase
+    .from("print_orders")
+    .select("*")
+    .eq("book_id", bookId)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  return printOrderRowToObj((data || [])[0]);
+}
+
 async function getPrintOrderById(id) {
   const { data, error } = await supabase
     .from("print_orders")
@@ -2542,6 +2558,45 @@ app.get("/api/books/:bookId/image-status", async (req, res) => {
       total:  totalPages,
       ready:  readyCount,
       done:   readyCount >= totalPages
+    });
+  } catch (err) {
+    return res.status(500).json({ status: "error", message: err?.message || "Failed" });
+  }
+});
+
+// ─── What did this customer actually buy? ────────────────────────────────────
+// Deliberately NOT folded into GET /api/books/:bookId: preview.html polls that
+// endpoint every 3 seconds during generation, and this adds a second table
+// lookup that only the delivery page ever needs.
+//
+// The format is derived, not stored. The Shopify webhook computes it but writes
+// it nowhere on the book row, so it is reconstructed from what does persist:
+//   print_orders row exists → its own format column ("printed" | "bundle")
+//   no row, purchaseUnlocked → "digital"
+//   no row, not unlocked     → "none" (not paid)
+// A printed-only order deliberately leaves purchaseUnlocked false, so this is
+// also the honest answer to "may this customer read the book here?".
+app.get("/api/books/:bookId/purchase", async (req, res) => {
+  try {
+    const book = await getBookLight(req.params.bookId);
+    if (!book) return res.status(404).json({ status: "error", message: "Book not found" });
+
+    let format = book.purchaseUnlocked ? "digital" : "none";
+    try {
+      const printOrder = await getLatestPrintOrderByBookId(req.params.bookId);
+      if (printOrder?.format) format = printOrder.format;
+    } catch (err) {
+      // A print_orders lookup failure must not blank out the delivery page.
+      // Falling back to the book row alone degrades to "digital", which is
+      // exactly what every pre-print-track book is.
+      console.error(`[purchase] print_orders lookup failed for ${req.params.bookId}:`, err.message);
+    }
+
+    return res.json({
+      status:   "ok",
+      format,
+      unlocked: book.purchaseUnlocked === true,
+      paid:     book.paymentStatus === "paid"
     });
   } catch (err) {
     return res.status(500).json({ status: "error", message: err?.message || "Failed" });
