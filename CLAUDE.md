@@ -209,7 +209,10 @@ These cannot be fixed in code — need dashboard access:
 3. **Railway DNS** — if lifebooksil.com / app.lifebooksil.com is unreachable, go to Railway → Settings → Domains and verify the custom domain mapping is active.
 
 ## Known Bugs — Open
-*(none currently — all known bugs fixed)*
+- **Frame-page typography is not under our control** (opened 2026-08-26, owner: verify on the printed proof first).
+  `renderFramePagePng` in `print-pdf/print-pdf-generator.cjs` sets `ctx.font = '...px Arial Unicode MS, Arial, sans-serif'`. **None of those three is registered** via `registerFont`, and node-canvas has no system-font fallback — so every machine falls back to its own default: Railway picks one face, a local Mac picks another. The dedication title renders visibly heavier in the Railway-produced PDF than in a local render of the same code. This is why the same file must always be produced on Railway, never locally.
+  Affects the dedication page, the filler pages, the closing page and the back cover — not the story spreads, which use `renderHebrewTextPng` with the registered Frank Ruhl Libre.
+  **Deliberately not fixed before the first print run**, by owner decision: judge the actual result on the physical proof, then decide whether to pin the frame pages to Assistant/Frank Ruhl Libre.
 
 ---
 
