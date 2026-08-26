@@ -709,7 +709,7 @@ app.get("/api/books/:bookId", async (req, res) => {
 async function sendPaymentConfirmationEmail(book) {
   if (!book.customerEmail) return;
 
-  const appUrl    = process.env.APP_URL || "https://lifebooks.online";
+  const appUrl    = process.env.APP_URL || "https://app.lifebooksil.com";
   const childName = book.childName || "your child";
   const bookTitle = book.generatedBook?.title || `${childName}'s Magical Adventure`;
   const lang      = book.language || "he";
@@ -878,7 +878,10 @@ async function sendPaymentConfirmationEmail(book) {
 async function sendPrintOrderConfirmationEmail(book) {
   if (!book.customerEmail) return;
 
-  const appUrl    = process.env.APP_URL || "https://lifebooksil.com";
+  // app., not the apex: the apex resolves to Shopify and does not serve
+  // contact.html, which is the only page this appUrl links to. The default is
+  // reached only when APP_URL is unset, and even then the link must open.
+  const appUrl    = process.env.APP_URL || "https://app.lifebooksil.com";
   const childName = book.childName || "your child";
   const bookTitle = book.generatedBook?.title || `${childName}'s Magical Adventure`;
   const lang      = book.language || "he";
@@ -1004,7 +1007,7 @@ async function sendPrintOrderConfirmationEmail(book) {
 async function sendBookReadyEmail(book) {
   if (!book.customerEmail) return;
 
-  const appUrl    = process.env.APP_URL || "https://lifebooks.online";
+  const appUrl    = process.env.APP_URL || "https://app.lifebooksil.com";
   const bookTitle = book.generatedBook?.title    || "Your Magical Storybook";
   const bookSub   = book.generatedBook?.subtitle || "A personalized adventure";
   const childName = book.childName || "your child";
@@ -1273,7 +1276,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
     const apiKey    = process.env.LEMONSQUEEZY_API_KEY;
     const storeId   = process.env.LEMONSQUEEZY_STORE_ID  || "347433";
     const variantId = process.env.LEMONSQUEEZY_VARIANT_ID;
-    const appUrl    = process.env.APP_URL || "https://lifebooks.online";
+    const appUrl    = process.env.APP_URL || "https://app.lifebooksil.com";
 
     console.log(`[Checkout] storeId=${storeId} variantId=${variantId} apiKey=${apiKey ? "set" : "MISSING"}`);
 
@@ -2895,7 +2898,7 @@ app.post("/api/contact", async (req, res) => {
       "other":        "Something else",
     };
     const subjectLine = subjectLabels[subject] || subject || "General inquiry";
-    const appUrl = process.env.APP_URL || "https://lifebooks.online";
+    const appUrl = process.env.APP_URL || "https://app.lifebooksil.com";
     const adminEmail = process.env.ADMIN_EMAIL || "onlinelifebooks@gmail.com";
 
     // ── Notify admin ──────────────────────────────────────────────────────────
