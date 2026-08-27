@@ -1542,7 +1542,9 @@ async function waitForBookPrintReady(bookId, { timeoutMs = 12 * 60 * 1000, inter
 async function generateAndStorePrintPdfs(rec) {
   const { gen } = await loadPrintModules();
   const content = await gen.generatePrintPDF(rec.bookId, {});
-  const cover   = await gen.generateCoverPDF(rec.bookId, {});
+  // The flat cover carries the spine, and its width is a function of the page
+  // count — so the content file is built first and its count handed over.
+  const cover   = await gen.generateCoverPDF(rec.bookId, { pageCount: content.pages });
   const contentPdfUrl = await uploadPdfToStorage(rec.bookId, "content", content.outputPath);
   const coverPdfUrl   = await uploadPdfToStorage(rec.bookId, "cover",   cover.outputPath);
   await updatePrintOrder(rec.id, { contentPdfUrl, coverPdfUrl });
