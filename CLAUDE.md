@@ -121,7 +121,8 @@ STEP 5: sendBookReadyEmail ONLY if purchaseUnlocked === true
 - **Retired 2026-08-24 and must not return**: the square-as-canvas contract, the two-thirds composition rule, `smartSquareCropUp` / `coverCropToSquare` in the live path, and the paid cover outpaint. See LIFEBOOK_SPEC.md §3 "היסטוריה".
 - Upscaling via Replicate Real-ESRGAN before assembly. Images embedded as JPEG q85–90; target file < 80MB.
 - Intermediates saved to `print-pdf/debug/`. Output in `print-pdf/output/`.
-- Cover: SEPARATE flat file (back + spine + front) — NOT implemented yet; waiting on Bookpod paper spec. TODO stub only.
+- **Every page must carry a TrimBox.** PDFKit writes only `/MediaBox`, so `stampPageBoxes()` must be called immediately after each page is created — including the one `autoFirstPage: true` makes on its own. Without it a validator measures the sheet with the bleed and reports the wrong size (Bookpod, 2026-08-27). TrimBox = 190×285, BleedBox = the full 196.4×291.4 sheet.
+- Cover: IS implemented and IS uploaded — `generateCoverPDF()` produces 2 separate pages (front, back) at page size, no spine. **⚠️ Bookpod's validator rejected exactly this on 2026-08-27 and demanded a flat 382.3×285 mm spread.** The cover structure is under dispute and frozen pending a written answer from Bookpod — see LIFEBOOK_SPEC.md §3 "קובץ כריכה". Do NOT change the cover structure, and do NOT send to print, before that answer arrives.
 - Endpoint: `POST /api/books/:id/print-pdf` (admin-token protected, owner-only).
 - Pilot protocol: 2 spreads first → owner approval → full run → Bookpod preview system check → physical proof copy before first sale.
 - Status (14.7): pipeline runs end-to-end (~$0.66/book) but first pilot FAILED the design spec (digital-viewer layout, no outpaint assembly, page numbers, cropped heads, 343MB). Fix per spec before anything else.

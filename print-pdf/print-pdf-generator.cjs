@@ -73,6 +73,25 @@ const PAGE_PT    = PAGE_W_PT;
 const MARGIN_INNER_MM = BLEED_MM + 10;        // 13.2mm from edge → 10mm safe margin
 const MARGIN_OUTER_MM = BLEED_MM + 6;         // 9.2mm from edge → 6mm safe margin
 
+// ─── Prepress page boxes ──────────────────────────────────────────────────────
+// PDFKit writes only /MediaBox. A print file it produces therefore states its
+// sheet size but never says where the paper gets cut, so a prepress validator has
+// to measure the whole sheet — bleed included — and reports 196.4×291.4 against
+// an expected 190×285. That is exactly what Bookpod returned on 2026-08-27:
+// "ה-TrimBox חסר בעמודים 1-2. ההשוואה בוצעה לפי מידת העמוד הנראית."
+//
+// TrimBox  = the finished page — the bleed inset on all four sides.
+// BleedBox = the full sheet we actually supply.
+// Nothing about the rendered pixels changes; this only declares the contract.
+// Must be called immediately after every page is created, on every page.
+function stampPageBoxes(doc, wPt = PAGE_W_PT, hPt = PAGE_H_PT, bleedMm = BLEED_MM) {
+  const b = bleedMm * MM_TO_PT;
+  const d = doc.page.dictionary.data;
+  d.TrimBox  = [b, b, wPt - b, hPt - b];
+  d.BleedBox = [0, 0, wPt, hPt];
+  d.CropBox  = [0, 0, wPt, hPt];
+}
+
 // The single line on the filler pages. See makeStarPage.
 const FILLER_LINE = 'כאן ההרפתקה ממשיכה...';
 
@@ -1644,6 +1663,7 @@ async function buildPDF(book, spreads, outputPath, logo) {
   // Helper: add a frame page from a canvas PNG buffer
   function addFramePage(pngBuffer) {
     doc.addPage();
+    stampPageBoxes(doc);
     doc.image(pngBuffer, 0, 0, { width: PAGE_W_PT, height: PAGE_H_PT });
   }
 
@@ -1697,6 +1717,7 @@ async function buildPDF(book, spreads, outputPath, logo) {
 
     // Page A — TEXT (even = RIGHT): outpainted extension bg + transparent Hebrew text overlay
     doc.addPage();
+    stampPageBoxes(doc);
     doc.image(spread.textBgJpeg, 0, 0, { width: PAGE_W_PT, height: PAGE_H_PT });
     if (spread.textOverlayPng) {
       doc.image(spread.textOverlayPng, 0, 0, { width: PAGE_W_PT, height: PAGE_H_PT });
@@ -1704,6 +1725,7 @@ async function buildPDF(book, spreads, outputPath, logo) {
 
     // Page B — ILLUSTRATION (odd = LEFT): original character, full-bleed, 1:1, zero distortion
     doc.addPage();
+    stampPageBoxes(doc);
     doc.image(spread.illustrationJpeg, 0, 0, { width: PAGE_W_PT, height: PAGE_H_PT });
   }
 
@@ -2362,8 +2384,10 @@ async function generateCoverPDF(bookId, options = {}) {
 
   const writeStream = fs.createWriteStream(outputPath);
   doc.pipe(writeStream);
+  stampPageBoxes(doc, COVER_W_PT, COVER_H_PT);                             // autoFirstPage page 1
   doc.image(frontJpeg, 0, 0, { width: COVER_W_PT, height: COVER_H_PT });   // page 1 — front
   doc.addPage({ size: [COVER_W_PT, COVER_H_PT], margin: 0 });
+  stampPageBoxes(doc, COVER_W_PT, COVER_H_PT);
   doc.image(backJpeg,  0, 0, { width: COVER_W_PT, height: COVER_H_PT });   // page 2 — back
   doc.end();
   await new Promise((resolve, reject) => {
@@ -2389,4 +2413,5 @@ module.exports = { generatePrintPDF, generateCoverPDF,
   __test: { computeSpreadGeometry, computeCharacterBBox,
     buildPDF, coverCropToPage, buildWideTextBgJpeg, renderHebrewTextPng,
     printBrighten, loadLogoPng, renderFramePagePng, drawStar, starTrio, FILLER_LINE,
+    stampPageBoxes,
     dims: () => ({ PAGE_W_MM, PAGE_H_MM, PAGE_W_PT, PAGE_H_PT, PRINT_W_PX, PRINT_H_PX }) } };
