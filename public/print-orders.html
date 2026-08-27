@@ -79,6 +79,14 @@
     }
     .genpdf-btn:hover { background:#fdf3de; }
     .genpdf-btn:disabled { opacity:0.5; cursor:default; background:transparent; }
+    /* A held order must never be mistaken for an actionable one. */
+    .order-card.held { background:#faf2f0; border-color:#e2b3a6; border-inline-start:6px solid #c0392b; box-shadow:none; }
+    .order-card.held .order-head h3 { color:#8c3a2a; }
+    .held-badge {
+      display:inline-block; background:#c0392b; color:#fff; font-size:0.78rem; font-weight:700;
+      padding:3px 12px; border-radius:20px;
+    }
+    .held-note { color:#8c3a2a; font-size:0.88rem; font-weight:600; line-height:1.6; margin:12px 0 4px; }
     .order-result { margin-top:12px; font-size:0.9rem; min-height:20px; }
     .order-result.ok  { color:#1e7a3c; }
     .order-result.err { color:#c0392b; }
@@ -123,6 +131,19 @@
 let token = sessionStorage.getItem("adminToken") || null;
 
 const FMT_LABEL = { printed: "ספר מודפס", bundle: "חבילה דיגיטלי+מודפס", digital: "דיגיטלי" };
+
+// Orders the owner has deliberately put on hold. They keep their row and their
+// files so nothing is lost, but the station must make it impossible to mistake
+// one for a live order and send it to print by accident.
+//
+// Keyed by print-order id rather than by Shopify order number, because the list
+// endpoint does not return the Shopify number and marking these needs no server
+// change. The id identifies the order itself, so re-ordering the same book later
+// would correctly produce a new, unheld card. The Shopify number the owner
+// recognises is spelled out in the note. Remove an entry to release the order.
+const HELD_ORDERS = {
+  "1": "הזמנת שופיפיי 7255021748470 — מושהית בהוראת הבעלים. לא לשלוח לדפוס ולא להפיק מחדש."
+};
 
 (function boot() {
   if (token) { showScreen("orders"); loadOrders(); }
@@ -226,34 +247,81 @@ function renderOrders(orders) {
       ? `<a href="${o.coverPdfUrl}" target="_blank">📕 קובץ כריכה</a>`
       : `<span class="missing">קובץ כריכה חסר</span>`;
     // Approval sends the reviewed files as-is, so it stays locked until both exist.
-    const hasPdfs = !!(o.contentPdfUrl && o.coverPdfUrl);
+    const hasPdfs   = !!(o.contentPdfUrl && o.coverPdfUrl);
+    const heldNote  = HELD_ORDERS[String(o.id)] || null;
+    if (heldNote) card.classList.add("held");
+
+    // The generate button used to appear only when a file was missing, which left
+    // no way to rebuild an order whose files were already produced — the ordinary
+    // case after a fix to the print generator. It is now always offered, and only
+    // its wording changes, so a rerun never depends on first deleting something.
+    const genLabel = hasPdfs ? "🔄 הפק מחדש" : "הפק קבצים";
 
     card.innerHTML = `
       <div class="order-head">
         <h3>${o.childName || "(ללא שם)"}</h3>
-        <span class="order-badge">${FMT_LABEL[o.format] || o.format}</span>
+        <span class="${heldNote ? "held-badge" : "order-badge"}">${heldNote ? "⛔ מוחזקת — לא לאישור" : (FMT_LABEL[o.format] || o.format)}</span>
       </div>
       <div class="order-date">${dateStr}</div>
+      ${heldNote ? `<div class="held-note">${heldNote}</div>` : ""}
       <div class="order-ship">${shipLines || "— אין פרטי משלוח —"}</div>
       <div class="order-links">${contentLink}${coverLink}</div>
-      <button class="approve-btn" data-id="${o.id}"${hasPdfs ? "" : " disabled"}>אשר ושלח לדפוס</button>
-      ${hasPdfs ? "" : `<button class="genpdf-btn" data-id="${o.id}">הפק קבצים</button>`}
+      <button class="approve-btn" data-id="${o.id}"${(hasPdfs && !heldNote) ? "" : " disabled"}>אשר ושלח לדפוס</button>
+      <button class="genpdf-btn" data-id="${o.id}"${heldNote ? " disabled" : ""}>${genLabel}</button>
       <div class="order-result" id="result-${o.id}">${hasPdfs ? "" : "יש להפיק את הקבצים ולבדוק אותם לפני האישור"}</div>
     `;
 
     const btn = card.querySelector(".approve-btn");
+    if (heldNote) btn.title = heldNote;
     btn.addEventListener("click", () => approveOrder(o, btn));
     const genBtn = card.querySelector(".genpdf-btn");
-    if (genBtn) genBtn.addEventListener("click", () => generatePdfs(o, genBtn));
+    if (heldNote) genBtn.title = heldNote;
+    genBtn.addEventListener("click", () => generatePdfs(o, genBtn, hasPdfs));
     list.appendChild(card);
   });
 }
 
-// Produces the two print PDFs for an order whose files are missing.
+// A regenerated file keeps its URL: storage upserts onto a fixed path per book.
+// So "does the file exist" cannot tell us a rerun has finished — only a change in
+// the object itself can. Last-Modified and Content-Length are both CORS-safelisted
+// response headers, so they are readable here without any server change.
+async function pdfFingerprint(url) {
+  if (!url) return null;
+  try {
+    const res = await fetch(url, { method: "HEAD", cache: "no-store" });
+    if (!res.ok) return null;
+    return (res.headers.get("last-modified") || "") + "|" + (res.headers.get("content-length") || "");
+  } catch {
+    return null;   // unreadable — treated as "no baseline", i.e. wait for existence
+  }
+}
+
+// Produces the two print PDFs for an order. isRegen means both files already
+// exist and are about to be replaced in place.
 // Never reaches Bookpod — the owner still reviews and approves afterwards.
-async function generatePdfs(order, btn) {
-  const resultEl = document.getElementById("result-" + order.id);
+async function generatePdfs(order, btn, isRegen) {
+  const resultEl   = document.getElementById("result-" + order.id);
+  const approveBtn = btn.parentElement.querySelector(".approve-btn");
+
+  if (isRegen) {
+    const ok = window.confirm(
+      `להפיק מחדש את קובצי הדפוס של ${order.childName || "הלקוח"}?\n` +
+      `שני הקבצים הקיימים יוחלפו — הקישורים יישארו זהים.\n` +
+      `ההפקה מנצלת קרדיטים של הגדלת איורים. בוקפוד לא מעורב.`
+    );
+    if (!ok) return;
+  }
+
+  // Read the current files BEFORE asking for new ones, so the poll below has
+  // something to compare against.
+  const before = isRegen
+    ? { content: await pdfFingerprint(order.contentPdfUrl), cover: await pdfFingerprint(order.coverPdfUrl) }
+    : { content: null, cover: null };
+
   btn.disabled = true;
+  // The old files are still sitting behind the same links while the rerun works.
+  // Approving now would send exactly the file this rerun exists to replace.
+  if (approveBtn) approveBtn.disabled = true;
   resultEl.className = "order-result";
   resultEl.textContent = "מפיק קבצים... (יכול לקחת כמה דקות — אל תסגרי את הדף)";
   try {
@@ -264,19 +332,23 @@ async function generatePdfs(order, btn) {
       resultEl.className = "order-result err";
       resultEl.textContent = "שגיאה: " + (data.error || "ההפקה נכשלה");
       btn.disabled = false;
+      if (approveBtn) approveBtn.disabled = false;
       return;
     }
-    // Generation runs in the background — poll until both files show up.
-    pollForPdfs(order.id, resultEl, btn);
+    // Generation runs in the background — poll until the files change (or appear).
+    pollForPdfs(order.id, resultEl, btn, approveBtn, before);
   } catch {
     resultEl.className = "order-result err";
     resultEl.textContent = "שגיאת רשת — נסי שוב";
     btn.disabled = false;
+    if (approveBtn) approveBtn.disabled = false;
   }
 }
 
-// Poll the orders list until the two PDFs exist (or ~12 minutes pass).
-function pollForPdfs(orderId, resultEl, btn) {
+// Poll until both PDFs are genuinely new (or ~12 minutes pass).
+// `before` holds the fingerprints captured before the run: null for a file that
+// did not exist, in which case appearing at all is the completion signal.
+function pollForPdfs(orderId, resultEl, btn, approveBtn, before) {
   const deadline = Date.now() + 12 * 60 * 1000;
   const tick = async () => {
     try {
@@ -285,16 +357,25 @@ function pollForPdfs(orderId, resultEl, btn) {
       const data = await res.json();
       const o = (data.orders || []).find(x => String(x.id) === String(orderId));
       if (o && o.contentPdfUrl && o.coverPdfUrl) {
-        resultEl.className = "order-result ok";
-        resultEl.textContent = "✅ הקבצים הופקו — בדקי אותם לפני האישור";
-        setTimeout(loadOrders, 800);
-        return;
+        const now = {
+          content: await pdfFingerprint(o.contentPdfUrl),
+          cover:   await pdfFingerprint(o.coverPdfUrl)
+        };
+        const replaced = (!before.content || now.content !== before.content)
+                      && (!before.cover   || now.cover   !== before.cover);
+        if (replaced) {
+          resultEl.className = "order-result ok";
+          resultEl.textContent = "✅ הקבצים הופקו — בדקי אותם לפני האישור";
+          setTimeout(loadOrders, 800);
+          return;
+        }
       }
     } catch { /* transient — keep polling */ }
     if (Date.now() > deadline) {
       resultEl.className = "order-result err";
       resultEl.textContent = "ההפקה לא הסתיימה בזמן — בדקי את יומן השרת ונסי שוב";
       btn.disabled = false;
+      if (approveBtn) approveBtn.disabled = false;
       return;
     }
     setTimeout(tick, 10000);
