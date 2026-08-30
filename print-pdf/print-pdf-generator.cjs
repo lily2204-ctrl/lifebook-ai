@@ -73,6 +73,20 @@ const PAGE_PT    = PAGE_W_PT;
 const MARGIN_INNER_MM = BLEED_MM + 10;        // 13.2mm from edge → 10mm safe margin
 const MARGIN_OUTER_MM = BLEED_MM + 6;         // 9.2mm from edge → 6mm safe margin
 
+// ─── Spine ────────────────────────────────────────────────────────────────────
+// Bookpod's flat cover carries the spine in the middle of the sheet, so its width
+// has to be computed per book. Their manual gives the paper table and the rule;
+// their wording says "thickness per page" but that is loose — the arithmetic only
+// closes on SHEETS. For our 28-page book their own configurator shows 0.225cm,
+// and 14 sheets × 0.16mm = 2.24mm is the single combination in their table that
+// lands there (28 × 0.16 would be 4.48mm, twice their figure). 0.16mm is Chromo
+// Matte 170g — the paper our print product is set to.
+// Never hard-code the result: it moves with the page count and the paper.
+const PAPER_THICKNESS_MM = 0.16;              // כרומו מט 170 גרם, per Bookpod's table
+function computeSpineMM(pageCount, thicknessMM = PAPER_THICKNESS_MM) {
+  return (pageCount / 2) * thicknessMM;       // sheets × thickness
+}
+
 // ─── Prepress page boxes ──────────────────────────────────────────────────────
 // PDFKit writes only /MediaBox. A print file it produces therefore states its
 // sheet size but never says where the paper gets cut, so a prepress validator has
@@ -1472,9 +1486,23 @@ function renderHebrewTextPng(text, squareBuffer) {
 
 const LOGO_PATH = path.join(__dirname, '..', 'public', 'assets', 'branding', 'lifebook-logo-print-cream.png');
 
+// The one cream every logo-bearing page is painted with — dedication, filler,
+// closing, book back cover, and the cover's back panel all use it.
+const FRAME_CREAM = [253, 248, 240];   // #fdf8f0
+
 /**
- * Load the Lifebook logo WebP and return it as a PNG Buffer via canvas.
+ * Load the Lifebook logo and return it as a PNG Buffer via canvas.
  * Returns null if the file is not found (non-fatal).
+ *
+ * The asset is fully opaque — its cream is baked in at rgb(253,246,236), which
+ * is NOT the rgb(253,248,240) of the pages it lands on. Drawn as-is it is a
+ * hard-edged rectangle of slightly cooler cream sitting on the page, visible on
+ * all five logo pages (owner, 2026-08-30). Since both creams are flat, shifting
+ * the whole image by the difference lands the background on the page colour
+ * exactly while moving the logo's own ink by the same ≤4/255 — far below what
+ * either a screen or a press resolves. Antialiased edges survive untouched,
+ * which a threshold-based alpha key would have destroyed.
+ * An asset that already carries real transparency is left alone.
  */
 async function loadLogoPng() {
   try {
@@ -1484,7 +1512,23 @@ async function loadLogoPng() {
     const W      = 600;
     const H      = Math.round(img.height * (W / img.width));
     const canvas = createCanvas(W, H);
-    canvas.getContext('2d').drawImage(img, 0, 0, W, H);
+    const ctx    = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, W, H);
+
+    const id = ctx.getImageData(0, 0, W, H), d = id.data;
+    if (d[3] === 255) {                       // opaque asset → normalise its cream
+      const baked = [d[0], d[1], d[2]];       // top-left pixel is background
+      const shift = FRAME_CREAM.map((v, c) => v - baked[c]);
+      if (shift.some(v => v !== 0)) {
+        for (let i = 0; i < W * H; i++) {
+          for (let c = 0; c < 3; c++) {
+            d[i * 4 + c] = Math.max(0, Math.min(255, d[i * 4 + c] + shift[c]));
+          }
+        }
+        ctx.putImageData(id, 0, 0);
+        console.log(`[print-pdf] logo cream normalised rgb(${baked}) → rgb(${FRAME_CREAM})`);
+      }
+    }
     return { buffer: canvas.toBuffer('image/png'), w: W, h: H };
   } catch (e) {
     console.warn(`[print-pdf] logo not found at ${LOGO_PATH}: ${e.message}`);
@@ -2180,6 +2224,8 @@ async function generateCoverPDF(bookId, options = {}) {
   const subtitleOverride = options.subtitleOverride ?? null;
   const globalStart = Date.now();
 
+  // Each panel is still drawn on a full page-sized canvas — bleed on all four
+  // sides — exactly as before. Only the assembly at the end changed.
   const COVER_W_PT = PAGE_W_PT;
   const COVER_H_PT = PAGE_H_PT;
   const COVER_W_MM = PAGE_W_MM;
@@ -2191,9 +2237,33 @@ async function generateCoverPDF(bookId, options = {}) {
   const COVER_PX   = COVER_W_PX;
   const mm2px      = COVER_W_PX / COVER_W_MM;
   const bleedPx    = Math.round(BLEED_MM * mm2px);
+  const trimWPx    = COVER_W_PX - bleedPx * 2;
 
+  // ── Flat sheet geometry ─────────────────────────────────────────────────────
+  // Bookpod prints the cover as ONE sheet: front + spine + back. In a Hebrew
+  // (RTL) book the spine sits to the RIGHT of the front cover, so the front is
+  // the LEFT panel — verified against the "דוגמה לכריכה תקינה" in their manual,
+  // where the title panel is left of the spine and the blurb/barcode panel right
+  // of it. The 2026-07-21 two-page cover, and the [back|spine|front] order that
+  // preceded it, are both retired.
+  const pageCount  = options.pageCount ?? 28;
+  const spineMM    = options.spineMM ?? computeSpineMM(pageCount, options.paperThicknessMM);
+  const spinePx    = Math.round(spineMM * mm2px);
+  const FLAT_W_MM  = BLEED_MM * 2 + TRIM_W_MM * 2 + spineMM;
+  const FLAT_H_MM  = COVER_H_MM;
+  const FLAT_W_PT  = FLAT_W_MM * MM_TO_PT;
+  const FLAT_H_PT  = COVER_H_PT;
+  const FLAT_W_PX  = bleedPx * 2 + trimWPx * 2 + spinePx;
+  const FLAT_H_PX  = COVER_H_PX;
+  const SPINE_X_PX = bleedPx + trimWPx;               // front's inner trim edge
+  const BACK_X_PX  = SPINE_X_PX + spinePx;            // back panel starts here
+
+  if (!options.pageCount) {
+    console.warn('[cover-pdf] no pageCount supplied — assuming 28. Spine width depends on it.');
+  }
   console.log(`[cover-pdf] ── START ── bookId: ${bookId}`);
-  console.log(`[cover-pdf] 2 pages, each ${COVER_W_MM.toFixed(1)}×${COVER_H_MM.toFixed(1)}mm (${COVER_W_PX}×${COVER_H_PX}px at 300DPI), no spine`);
+  console.log(`[cover-pdf] flat sheet ${FLAT_W_MM.toFixed(2)}×${FLAT_H_MM.toFixed(2)}mm (trim ${(FLAT_W_MM - BLEED_MM * 2).toFixed(2)}×${TRIM_H_MM}mm), ${FLAT_W_PX}×${FLAT_H_PX}px at 300DPI`);
+  console.log(`[cover-pdf] spine ${spineMM.toFixed(2)}mm (${pageCount} pages ÷ 2 × ${(options.paperThicknessMM ?? PAPER_THICKNESS_MM)}mm), layout [front | spine | back] left→right (RTL)`);
 
   const debugDir = path.join(__dirname, 'debug', bookId);
   fs.mkdirSync(debugDir,   { recursive: true });
@@ -2369,10 +2439,50 @@ async function generateCoverPDF(bookId, options = {}) {
   const backJpeg = backCanvas.toBuffer('image/jpeg', { quality: 0.90 });
   saveDebug(debugDir, 'cover-back.jpg', backJpeg);
 
-  // ── Build TWO-page PDF (page 1 = front, page 2 = back) ───────────────────────
+  // ═══ FLAT SHEET — [front | spine | back] ═════════════════════════════════════
+  // Each panel keeps its outer, top and bottom bleed and loses only its INNER
+  // bleed strip, which the spine replaces. The printed trim area of both panels
+  // is therefore byte-identical to the two-page cover it replaces.
+  const flatCanvas = createCanvas(FLAT_W_PX, FLAT_H_PX);
+  const flctx      = flatCanvas.getContext('2d');
+  {
+    // Front — drop the 3.2mm bleed on its right (spine) edge.
+    flctx.drawImage(frontCanvas, 0, 0, bleedPx + trimWPx, COVER_H_PX,
+                                 0, 0, bleedPx + trimWPx, COVER_H_PX);
+    // Back — drop the 3.2mm bleed on its left (spine) edge.
+    flctx.drawImage(backCanvas, bleedPx, 0, trimWPx + bleedPx, COVER_H_PX,
+                                BACK_X_PX, 0, trimWPx + bleedPx, COVER_H_PX);
+
+    // Spine — at 28 pages it is ~2.2mm, far too narrow for type. Rather than a
+    // flat colour that would band against the illustration, each row crosses
+    // from the front's inner edge colour to the back's, so the picture simply
+    // continues into it and the cream back meets it without a seam.
+    const SAMP  = 12;
+    const fEdge = flctx.getImageData(SPINE_X_PX - SAMP, 0, SAMP, FLAT_H_PX).data;
+    const bEdge = flctx.getImageData(BACK_X_PX, 0, SAMP, FLAT_H_PX).data;
+    const strip = flctx.createImageData(spinePx, FLAT_H_PX);
+    for (let y = 0; y < FLAT_H_PX; y++) {
+      const f = [0, 0, 0], b = [0, 0, 0];
+      for (let k = 0; k < SAMP; k++) {
+        const i = (y * SAMP + k) * 4;
+        for (let c = 0; c < 3; c++) { f[c] += fEdge[i + c]; b[c] += bEdge[i + c]; }
+      }
+      for (let x = 0; x < spinePx; x++) {
+        const t = spinePx > 1 ? x / (spinePx - 1) : 0;
+        const j = (y * spinePx + x) * 4;
+        for (let c = 0; c < 3; c++) strip.data[j + c] = (f[c] / SAMP) * (1 - t) + (b[c] / SAMP) * t;
+        strip.data[j + 3] = 255;
+      }
+    }
+    flctx.putImageData(strip, SPINE_X_PX, 0);
+  }
+  const flatJpeg = flatCanvas.toBuffer('image/jpeg', { quality: 0.90 });
+  saveDebug(debugDir, 'cover-flat.jpg', flatJpeg);
+
+  // ── Build the ONE-page cover PDF ─────────────────────────────────────────────
   const outputPath = path.join(OUTPUT_DIR, `${bookId}-cover.pdf`);
   const doc = new PDFDocument({
-    size:          [COVER_W_PT, COVER_H_PT],
+    size:          [FLAT_W_PT, FLAT_H_PT],
     margin:        0,
     autoFirstPage: true,
     info: {
@@ -2384,11 +2494,8 @@ async function generateCoverPDF(bookId, options = {}) {
 
   const writeStream = fs.createWriteStream(outputPath);
   doc.pipe(writeStream);
-  stampPageBoxes(doc, COVER_W_PT, COVER_H_PT);                             // autoFirstPage page 1
-  doc.image(frontJpeg, 0, 0, { width: COVER_W_PT, height: COVER_H_PT });   // page 1 — front
-  doc.addPage({ size: [COVER_W_PT, COVER_H_PT], margin: 0 });
-  stampPageBoxes(doc, COVER_W_PT, COVER_H_PT);
-  doc.image(backJpeg,  0, 0, { width: COVER_W_PT, height: COVER_H_PT });   // page 2 — back
+  stampPageBoxes(doc, FLAT_W_PT, FLAT_H_PT);
+  doc.image(flatJpeg, 0, 0, { width: FLAT_W_PT, height: FLAT_H_PT });
   doc.end();
   await new Promise((resolve, reject) => {
     writeStream.on('finish', resolve);
@@ -2397,14 +2504,17 @@ async function generateCoverPDF(bookId, options = {}) {
 
   const fileSizeMB = (fs.statSync(outputPath).size / 1024 / 1024).toFixed(1);
   const totalSec   = ((Date.now() - globalStart) / 1000).toFixed(1);
-  console.log(`[cover-pdf] ── DONE ── ${totalSec}s | 2 pages | ${COVER_W_MM.toFixed(1)}×${COVER_H_MM.toFixed(1)}mm each | ${fileSizeMB}MB`);
+  console.log(`[cover-pdf] ── DONE ── ${totalSec}s | 1 flat sheet | ${FLAT_W_MM.toFixed(2)}×${FLAT_H_MM.toFixed(2)}mm | spine ${spineMM.toFixed(2)}mm | ${fileSizeMB}MB`);
   console.log(`[cover-pdf] Output: ${outputPath}`);
 
   return {
-    outputPath, pages: 2,
-    widthMM: COVER_W_MM, heightMM: COVER_H_MM,
+    outputPath, pages: 1,
+    widthMM: FLAT_W_MM, heightMM: FLAT_H_MM,
+    trimWidthMM: FLAT_W_MM - BLEED_MM * 2, trimHeightMM: TRIM_H_MM,
+    spineMM, pageCount,
     frontDebug: path.join(debugDir, 'cover-front.jpg'),
     backDebug:  path.join(debugDir, 'cover-back.jpg'),
+    flatDebug:  path.join(debugDir, 'cover-flat.jpg'),
     fileSizeMB: parseFloat(fileSizeMB), totalSeconds: parseFloat(totalSec),
   };
 }

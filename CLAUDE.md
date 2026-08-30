@@ -122,7 +122,7 @@ STEP 5: sendBookReadyEmail ONLY if purchaseUnlocked === true
 - Upscaling via Replicate Real-ESRGAN before assembly. Images embedded as JPEG q85–90; target file < 80MB.
 - Intermediates saved to `print-pdf/debug/`. Output in `print-pdf/output/`.
 - **Every page must carry a TrimBox.** PDFKit writes only `/MediaBox`, so `stampPageBoxes()` must be called immediately after each page is created — including the one `autoFirstPage: true` makes on its own. Without it a validator measures the sheet with the bleed and reports the wrong size (Bookpod, 2026-08-27). TrimBox = 190×285, BleedBox = the full 196.4×291.4 sheet.
-- Cover: IS implemented and IS uploaded — `generateCoverPDF()` produces 2 separate pages (front, back) at page size, no spine. **⚠️ Bookpod's validator rejected exactly this on 2026-08-27 and demanded a flat 382.3×285 mm spread.** The cover structure is under dispute and frozen pending a written answer from Bookpod — see LIFEBOOK_SPEC.md §3 "קובץ כריכה". Do NOT change the cover structure, and do NOT send to print, before that answer arrives.
+- Cover: ONE flat sheet, `[front | spine | back]` left→right — front is the LEFT panel because Hebrew binding puts the spine to its right. 388.64×291.40 mm, trim 382.24×285. Spine = `(pageCount / 2) × 0.16 mm` (Chromo Matte 170g) — **never hard-code it**; `server.js` passes `pageCount` from the content run. The 2-page cover (2026-07-21) and the `[back|spine|front]` order before it are both retired — see LIFEBOOK_SPEC.md §3 "קובץ כריכה".
 - Endpoint: `POST /api/books/:id/print-pdf` (admin-token protected, owner-only).
 - Pilot protocol: 2 spreads first → owner approval → full run → Bookpod preview system check → physical proof copy before first sale.
 - Status (14.7): pipeline runs end-to-end (~$0.66/book) but first pilot FAILED the design spec (digital-viewer layout, no outpaint assembly, page numbers, cropped heads, 343MB). Fix per spec before anything else.
@@ -208,6 +208,9 @@ These cannot be fixed in code — need dashboard access:
 1. **Supabase paused** — if the DB returns 522/connection timeout, go to supabase.com → project → click "Resume".
 2. **Supabase Storage bucket** — `book-images` bucket must exist and be **Public**.
 3. **Railway DNS** — if lifebooksil.com / app.lifebooksil.com is unreachable, go to Railway → Settings → Domains and verify the custom domain mapping is active.
+
+## Future Cards — Not Blocking
+- **Barcode / ISBN on the back cover** (opened 2026-08-30). Bookpod's sample cover carries one; ours does not, and from Ariel's book we know the barcode is the author's responsibility, not theirs. The proof copy deliberately ships without one. To settle later: is a barcode required at all for a personalised, non-retail product, and if so what goes in it (ISBN? an internal order code?).
 
 ## Known Bugs — Open
 - **Frame-page typography is not under our control** (opened 2026-08-26, owner: verify on the printed proof first).
