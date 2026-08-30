@@ -209,6 +209,9 @@ These cannot be fixed in code — need dashboard access:
 2. **Supabase Storage bucket** — `book-images` bucket must exist and be **Public**.
 3. **Railway DNS** — if lifebooksil.com / app.lifebooksil.com is unreachable, go to Railway → Settings → Domains and verify the custom domain mapping is active.
 
+## Future Cards — Not Blocking
+- **Barcode / ISBN on the back cover** (opened 2026-08-30). Bookpod's sample cover carries one; ours does not, and from Ariel's book we know the barcode is the author's responsibility, not theirs. The proof copy deliberately ships without one. To settle later: is a barcode required at all for a personalised, non-retail product, and if so what goes in it (ISBN? an internal order code?).
+
 ## Known Bugs — Open
 - **Frame-page typography is not under our control** (opened 2026-08-26, owner: verify on the printed proof first).
   `renderFramePagePng` in `print-pdf/print-pdf-generator.cjs` sets `ctx.font = '...px Arial Unicode MS, Arial, sans-serif'`. **None of those three is registered** via `registerFont`, and node-canvas has no system-font fallback — so every machine falls back to its own default: Railway picks one face, a local Mac picks another. The dedication title renders visibly heavier in the Railway-produced PDF than in a local render of the same code. This is why the same file must always be produced on Railway, never locally.

@@ -1486,9 +1486,23 @@ function renderHebrewTextPng(text, squareBuffer) {
 
 const LOGO_PATH = path.join(__dirname, '..', 'public', 'assets', 'branding', 'lifebook-logo-print-cream.png');
 
+// The one cream every logo-bearing page is painted with — dedication, filler,
+// closing, book back cover, and the cover's back panel all use it.
+const FRAME_CREAM = [253, 248, 240];   // #fdf8f0
+
 /**
- * Load the Lifebook logo WebP and return it as a PNG Buffer via canvas.
+ * Load the Lifebook logo and return it as a PNG Buffer via canvas.
  * Returns null if the file is not found (non-fatal).
+ *
+ * The asset is fully opaque — its cream is baked in at rgb(253,246,236), which
+ * is NOT the rgb(253,248,240) of the pages it lands on. Drawn as-is it is a
+ * hard-edged rectangle of slightly cooler cream sitting on the page, visible on
+ * all five logo pages (owner, 2026-08-30). Since both creams are flat, shifting
+ * the whole image by the difference lands the background on the page colour
+ * exactly while moving the logo's own ink by the same ≤4/255 — far below what
+ * either a screen or a press resolves. Antialiased edges survive untouched,
+ * which a threshold-based alpha key would have destroyed.
+ * An asset that already carries real transparency is left alone.
  */
 async function loadLogoPng() {
   try {
@@ -1498,7 +1512,23 @@ async function loadLogoPng() {
     const W      = 600;
     const H      = Math.round(img.height * (W / img.width));
     const canvas = createCanvas(W, H);
-    canvas.getContext('2d').drawImage(img, 0, 0, W, H);
+    const ctx    = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, W, H);
+
+    const id = ctx.getImageData(0, 0, W, H), d = id.data;
+    if (d[3] === 255) {                       // opaque asset → normalise its cream
+      const baked = [d[0], d[1], d[2]];       // top-left pixel is background
+      const shift = FRAME_CREAM.map((v, c) => v - baked[c]);
+      if (shift.some(v => v !== 0)) {
+        for (let i = 0; i < W * H; i++) {
+          for (let c = 0; c < 3; c++) {
+            d[i * 4 + c] = Math.max(0, Math.min(255, d[i * 4 + c] + shift[c]));
+          }
+        }
+        ctx.putImageData(id, 0, 0);
+        console.log(`[print-pdf] logo cream normalised rgb(${baked}) → rgb(${FRAME_CREAM})`);
+      }
+    }
     return { buffer: canvas.toBuffer('image/png'), w: W, h: H };
   } catch (e) {
     console.warn(`[print-pdf] logo not found at ${LOGO_PATH}: ${e.message}`);
