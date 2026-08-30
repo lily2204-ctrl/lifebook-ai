@@ -92,11 +92,16 @@
     .order-result.err { color:#c0392b; }
     #ordersEmpty, #ordersError { color:#888; margin-top:16px; }
     #ordersError { color:#c0392b; }
-    #refreshBtn {
+    #refreshBtn, #checkConnBtn {
       background:transparent; border:1px solid var(--gold); color:var(--gold); border-radius:8px;
       padding:8px 20px; font-family:inherit; font-size:0.9rem; cursor:pointer; margin-bottom:24px;
     }
-    #refreshBtn:hover { background:#fdf3de; }
+    #refreshBtn:hover, #checkConnBtn:hover { background:#fdf3de; }
+    #checkConnBtn { margin-right:8px; }
+    #checkConnBtn:disabled { opacity:0.5; cursor:default; background:transparent; }
+    #connResult { margin:-12px 0 20px; font-size:0.9rem; }
+    #connResult.ok  { color:#1e8449; }
+    #connResult.err { color:#c0392b; }
   </style>
 </head>
 <body>
@@ -122,6 +127,8 @@
   <h2>הזמנות דפוס ממתינות לאישור</h2>
   <p id="ordersSubtitle">בדקי את שני קובצי ה-PDF, ואז לחצי «אשר ושלח לדפוס». הלחיצה יוצרת את ההזמנה בבוקפוד ומנצלת קרדיט.</p>
   <button id="refreshBtn">↻ רענן</button>
+  <button id="checkConnBtn">בדוק חיבור לבוקפוד</button>
+  <div id="connResult"></div>
   <div id="ordersList"></div>
   <div id="ordersEmpty" style="display:none">אין כרגע הזמנות דפוס הממתינות לאישור.</div>
   <div id="ordersError"></div>
@@ -193,6 +200,31 @@ document.getElementById("logoutBtn").addEventListener("click", () => {
 });
 
 document.getElementById("refreshBtn").addEventListener("click", loadOrders);
+
+// Verifies the Bookpod credentials without producing anything: it only asks for
+// upload slots. No book, no file, no credits.
+document.getElementById("checkConnBtn").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  const out = document.getElementById("connResult");
+  btn.disabled = true;
+  out.className = "";
+  out.textContent = "בודק חיבור...";
+  try {
+    const res  = await apiFetch("/api/admin/bookpod/check", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      out.className = "ok";
+      out.textContent = "✅ " + (data.message || "החיבור תקין");
+    } else {
+      out.className = "err";
+      out.textContent = "❌ " + (data.error || `נכשל (HTTP ${res.status})`);
+    }
+  } catch {
+    out.className = "err";
+    out.textContent = "❌ שגיאת רשת — נסי שוב";
+  }
+  btn.disabled = false;
+});
 
 function handleExpiredToken() {
   token = null;

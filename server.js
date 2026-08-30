@@ -3332,11 +3332,35 @@ async function loadPrintModules() {
 }
 
 // NOTE: no balance/price/order-status endpoints — the Bookpod API has none.
-// Credits are viewed in the Bookpod dashboard; live wiring is verified by the
-// draft upload (create-book) itself.
+// Credits are viewed in the Bookpod dashboard.
 
-// Generate both PDFs (if missing) and upload to Bookpod as a DRAFT (status=false).
-// Drafts consume NO credits and are not shown in Bookpod's public store.
+// Is the Bookpod connection alive? Asks for upload slots and throws the answer
+// away. This is step 1 of 3 of book creation, and on its own it creates nothing:
+// no book in the account, no file transferred, no credits touched. Safe to call
+// any time — which is the point, since the credentials live only in Railway and
+// this is the only way to verify them without producing something real.
+app.post("/api/admin/bookpod/check", requireAdminAuth, async (req, res) => {
+  try {
+    const { bookpod } = await loadPrintModules();
+    const stamp = `connection-check-${Date.now()}`;
+    const urls = await bookpod.requestUploadUrls(`${stamp}-content.pdf`, `${stamp}-cover.pdf`);
+    console.log("[bookpod] connection check: OK — upload slots granted, nothing created");
+    return res.json({
+      ok: true,
+      message: "החיבור לבוקפוד תקין — התקבלו כתובות העלאה. לא נוצר ספר ולא נצרכו קרדיטים.",
+      gotContentUrl: Boolean(urls.contentUploadUrl),
+      gotCoverUrl:   Boolean(urls.coverUploadUrl),
+    });
+  } catch (err) {
+    console.error("[bookpod] connection check FAILED:", err.message);
+    return res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+// Generate both PDFs (if missing) and create the book on Bookpod.
+// Creating a book consumes NO credits — only an order does. showInStore is false,
+// so it stays off Bookpod's public storefront (that flag is store visibility, not
+// a draft state — the book itself is real in the account either way).
 app.post("/api/books/:bookId/bookpod/create-book", async (req, res) => {
   if (!printAdminOk(req)) return res.status(401).json({ error: "Unauthorized" });
   const { bookId } = req.params;
@@ -3349,7 +3373,7 @@ app.post("/api/books/:bookId/bookpod/create-book", async (req, res) => {
     const cover = await gen.generateCoverPDF(bookId, {});
     console.log(`[bookpod] create-book [${bookId}]: content=${content.outputPath} cover=${cover.outputPath}`);
     const bookpodBookId = await bookpod.createBook(bookId, content.outputPath, cover.outputPath);
-    console.log(`[bookpod] create-book [${bookId}]: DRAFT created — bookpodBookId=${bookpodBookId} (no credits consumed)`);
+    console.log(`[bookpod] create-book [${bookId}]: book created — bookpodBookId=${bookpodBookId} (no credits consumed)`);
   })().catch(err => console.error(`bookpod create-book [${bookId}]: FATAL — ${err.message}`));
 });
 
