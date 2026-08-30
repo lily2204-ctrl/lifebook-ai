@@ -195,6 +195,35 @@ PDFKit כותב במילון העמוד **רק `/MediaBox`**. קובץ שמופ�
 - טוקן ה־API נשמר כמשתנה סביבה בלבד. לעולם לא בקוד ולא בריפו.
 - כל שליחת הזמנה אמיתית לבוקפוד (= כסף) — באישור הבעלים, עד שהזרימה מאושרת כיציבה.
 
+### מקור האמת ל-API (הוכרע 30.8.2026)
+
+**התוסף הרשמי שלהם, לא המסמכים.** `BookPod Author Tools` v2.2.2 מ-wordpress.org הוא הקוד שבוקפוד עצמם כותבים מול ה-API שלהם. מסמכי ה-PDF שלהם מינואר 2025 מתארים זרימת העלאה **שכבר לא קיימת**, והקוד שלנו נבנה לפיהם — ולכן ההרצה החיה הראשונה (30.8.2026) נכשלה ב-`HTTP 500 {"success":false,"error":"Unexpected field"}`.
+
+הסיבה מופיעה מילולית ב-`bookpod-author-tools.php:615`: *"BookPod backend expects `upload.fields([{ name: 'images' }])`"*. כלומר `POST /api/v1/books` מקבל **שדה קובץ אחד בלבד — `images`** (תמונות תצוגה לחנות). שני ה-PDF-ים שלנו הגיעו כ-`content_file`/`cover_file` ונדחו על ידי multer.
+
+### יצירת ספר — שלושה שלבים
+
+| שלב | קריאה | תוכן |
+|---|---|---|
+| 1 | `POST /api/v1/books/upload-url` | JSON `{contentFileName, coverFileName}` → מחזיר `contentUploadUrl`/`coverUploadUrl` — כתובות חתומות ל-Google Cloud Storage. **לא יוצר כלום ולא עולה כלום** — לכן זו בדיקת החיווט הבטוחה |
+| 2 | `PUT` לכתובת החתומה | בייטים גולמיים, `Content-Type: application/pdf`, **בלי כותרות אימות** — החתימה בכתובת היא האישור, וכותרות משלנו ישברו אותה |
+| 3 | `POST /api/v1/books` | JSON **שטוח** (לא תחת מפתח `data`) + `contentUrl`/`coverUrl` כ-`gs://bucket/object` → מחזיר `bookId` |
+
+**מפרט הדפוס בשלב 3** — רק הערכים שבטופס שלהם (`bpat-book.php:948-990`) חוקיים: `printcolor=color` · `sheettype=chromo170` · `finishtype=soft` (האפשרות היחידה) · `readingdirection=right` · `width=19` `height=28.5` (ס"מ; מותר 12–22 ו-17–29.7) · `bleed=true`. **`laminationtype` נשאר פרמטר פתוח** (`none`/`flat`/`matt`), ברירת מחדל `matt`; יוכרע לפי תשובת בוקפוד וההוכחה הפיזית.
+
+`sheettype=chromo170` הוא **אישור עצמאי לנייר** שכבר הוסק מהשדרה בדרך אחרת לגמרי (0.16 מ"מ לגיליון מול הקונפיגורטור שלהם).
+
+### שתי הנחות שהיו שגויות ותוקנו
+
+- **`status` הוא לא "טיוטה"** אלא *"Show in store?"* — הצגה בחנות שלהם בלבד. אין מצב טיוטה: הספר נוצר בחשבון בכל מקרה. עדיין **לא צורך קרדיטים** — רק הזמנה צורכת.
+- **`external_id` לא קיים ב-API** — אפס מופעים בכל התוסף. העקיבות עוברת ל-`reference_num1` בתוך `shippingDetails` של ההזמנה.
+
+### הזמנה — `POST /api/v1/orders`
+
+מבנה שונה לחלוטין ממה שהקוד הישן שלח (`bpat-order.php:44-50`, `:249-380`): `shippingDetails` עם `name`/`phoneNumber`/`zipCode`/`house`/`shippingMethod`/`shippingCompanyId`/`acceptTerms`, מערך `items` עם `{type:'book', bookid, quantity}`, ו-`totalprice`. התשובה: `{success, order_no}` — **ייתכן `success:false` בתוך HTTP 200**, אז קוד הסטטוס לבדו לא מספיק. אין `tracking_number` בתשובה; מעקב משלוחים הוא זרימה נפרדת.
+
+הקוד יושב ב-`print-pdf/bookpod-order.cjs` — קובץ נפרד בכוונה — וחסום ב-`BOOKPOD_ORDERS_ENABLED`. בלי המשתנה הזה הפונקציה זורקת לפני שהיא מגיעה לבוקפוד.
+
 ---
 
 ## 6. עבודת התבניות — יישור קו (מסלול עבודה נפרד)

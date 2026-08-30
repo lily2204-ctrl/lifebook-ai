@@ -4,10 +4,9 @@
  *
  * ============================================================
  * !! OWNER APPROVAL REQUIRED before calling createOrder !!
- * in production. Every real order consumes pre-paid credits
- * and triggers physical printing + shipping. Never call
- * createOrder automatically — always gate behind explicit
- * owner confirmation.
+ * Every real order consumes pre-paid credits and triggers
+ * physical printing + shipping. createOrder lives in
+ * bookpod-order.cjs and is gated behind BOOKPOD_ORDERS_ENABLED.
  * ============================================================
  *
  * Env vars required:
@@ -16,16 +15,28 @@
  *   BOOKPOD_API_BASE_URL — optional override
  *                          (default: https://cloud-function-bookpod-festjdz7ga-ey.a.run.app)
  *
- * Base URL + auth headers confirmed from two cross-referenced sources (2026-08-10):
- *   1. Official Bookpod API docs (CreateBook / CreateOrder PDFs, Jan-2025).
- *   2. Official WordPress plugin "bookpod-author-tools" (bpat-book.php) — same
- *      host hardcoded, same x-user-id + x-custom-token headers.
+ * ---------------------------------------------------------------------------
+ * Source of truth (2026-08-30): Bookpod's own WordPress plugin,
+ * "BookPod Author Tools" v2.2.2, downloaded from wordpress.org. It is the code
+ * Bookpod themselves write against this API, so it beats their published PDFs —
+ * which are dated January 2025 and describe an upload flow that no longer exists.
+ *
+ * The first live run against this API returned
+ *   HTTP 500 {"success":false,"error":"Unexpected field"}
+ * That string is multer's LIMIT_UNEXPECTED_FILE, and the plugin says why, verbatim
+ * (bookpod-author-tools.php:615):
+ *   "each preview image is sent with the exact field name "images"
+ *    (BookPod backend expects upload.fields([{ name: 'images' }]))"
+ * POST /api/v1/books accepts exactly one file field — `images`, the store
+ * thumbnails. The PDFs do not go through it at all any more. They are PUT
+ * straight to Google Cloud Storage against a signed URL, and the book record
+ * then references them by gs:// URI. Hence the three steps below.
+ * ---------------------------------------------------------------------------
  */
 
 'use strict';
 
 const fs = require('fs');
-const path = require('path');
 const https = require('https');
 const http = require('http');
 
@@ -37,8 +48,9 @@ const BASE_URL = process.env.BOOKPOD_API_BASE_URL || 'https://cloud-function-boo
 const USER_ID = process.env.BOOKPOD_USER_ID;     // sent as x-user-id header
 const API_TOKEN = process.env.BOOKPOD_API_TOKEN; // sent as x-custom-token header; never fall back to a literal
 
-// Auth headers used on every request — Bookpod uses x-user-id + x-custom-token,
-// NOT an Authorization: Bearer token (confirmed from docs + the official plugin).
+// Auth headers used on every API request — Bookpod uses x-user-id + x-custom-token,
+// NOT an Authorization: Bearer token. Note these are NOT sent when PUTting a file
+// to a signed Google Storage URL: that URL carries its own credentials.
 function authHeaders() {
   return { 'x-user-id': USER_ID, 'x-custom-token': API_TOKEN };
 }
@@ -49,40 +61,62 @@ function assertCredentials() {
   return null;
 }
 
+// ─── Print specification ─────────────────────────────────────────────────────
+// The physical product. Values are the exact keys Bookpod's own form offers
+// (bpat-book.php:948-990) — anything else is rejected.
+//
+// sheettype `chromo170` = Chromo Matte 170gr. This is an independent confirmation
+// of the paper we had already reverse-engineered from the spine: their
+// configurator shows 0.225cm for our 28 pages, and 14 sheets x 0.16mm is the only
+// combination in their thickness table that lands there. Two different routes,
+// same paper.
+//
+// laminationtype is deliberately left as a parameter, not settled: `matt` sits
+// with our matte paper and our look, but the choice is pending Bookpod's own
+// recommendation and the physical proof (owner, 2026-08-30).
+const PRINT_DEFAULTS = {
+  title:            null,          // required by Bookpod — falls back to the bookId
+  author:           'Lifebook',
+  language:         'Hebrew',
+  printcolor:       'color',
+  sheettype:        'chromo170',   // Chromo Matte 170gr
+  laminationtype:   'matt',        // 'none' | 'flat' (gloss) | 'matt' — OPEN, see above
+  finishtype:       'soft',        // soft cover — the only option they offer
+  readingdirection: 'right',       // right-to-left, Hebrew binding
+  widthCm:          19,            // their form allows 12–22
+  heightCm:         28.5,          // their form allows 17–29.7
+  bleed:            true,          // our files carry 3.2mm bleed on every side
+  showInStore:      false,
+};
+
 // ---------------------------------------------------------------------------
-// Internal HTTP helper
+// Internal HTTP helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Make an HTTP/HTTPS request to the Bookpod API.
+ * Make a JSON HTTP request to the Bookpod API.
  * @param {'GET'|'POST'|'PUT'|'DELETE'} method
  * @param {string} endpoint  e.g. '/api/v1/books'
  * @param {object|null} body JSON body (for POST/PUT)
- * @param {object} [extraHeaders]
  * @returns {Promise<object>} parsed JSON response
  */
-function apiRequest(method, endpoint, body = null, extraHeaders = {}) {
+function apiRequest(method, endpoint, body = null) {
   return new Promise((resolve, reject) => {
     const credErr = assertCredentials();
-    if (credErr) {
-      return reject(new Error(credErr));
-    }
+    if (credErr) return reject(new Error(credErr));
 
     const url = new URL(endpoint, BASE_URL);
-    const isHttps = url.protocol === 'https:';
-    const lib = isHttps ? https : http;
-
+    const lib = url.protocol === 'https:' ? https : http;
     const bodyStr = body ? JSON.stringify(body) : null;
 
     const options = {
       hostname: url.hostname,
-      port: url.port || (isHttps ? 443 : 80),
+      port: url.port || (url.protocol === 'https:' ? 443 : 80),
       path: url.pathname + url.search,
       method,
       headers: {
         ...authHeaders(),
         'Accept': 'application/json',
-        ...extraHeaders,
         ...(bodyStr ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
       },
     };
@@ -112,151 +146,113 @@ function apiRequest(method, endpoint, body = null, extraHeaders = {}) {
 }
 
 /**
- * Multipart file upload helper for PDF files.
- * Uses Node's built-in modules only — no form-data package required.
- * @param {string} endpoint
- * @param {object} fields  plain text fields
- * @param {Array<{name:string, filePath:string, mimeType:string}>} files
- * @returns {Promise<object>}
+ * PUT a file's bytes to a pre-signed Google Cloud Storage URL.
+ * No auth headers — the signature in the URL is the credential, and adding our
+ * own headers would break it. The response body is XML on failure, never JSON,
+ * so this deliberately does not try to parse it.
  */
-function apiUpload(endpoint, fields, files) {
+function putFileToSignedUrl(signedUrl, filePath, mimeType = 'application/pdf') {
   return new Promise((resolve, reject) => {
-    const credErr = assertCredentials();
-    if (credErr) {
-      return reject(new Error(credErr));
-    }
+    const fileData = fs.readFileSync(filePath);
+    const url = new URL(signedUrl);
+    const lib = url.protocol === 'https:' ? https : http;
 
-    const boundary = `----BookpodBoundary${Date.now()}`;
-    const url = new URL(endpoint, BASE_URL);
-    const isHttps = url.protocol === 'https:';
-    const lib = isHttps ? https : http;
-
-    // Build multipart body
-    const parts = [];
-
-    for (const [key, value] of Object.entries(fields)) {
-      parts.push(
-        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${value}\r\n`)
-      );
-    }
-
-    for (const { name, filePath, mimeType } of files) {
-      const filename = path.basename(filePath);
-      const fileData = fs.readFileSync(filePath);
-      parts.push(
-        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`),
-        fileData,
-        Buffer.from('\r\n')
-      );
-    }
-
-    parts.push(Buffer.from(`--${boundary}--\r\n`));
-    const bodyBuf = Buffer.concat(parts);
-
-    const options = {
+    const req = lib.request({
       hostname: url.hostname,
-      port: url.port || (isHttps ? 443 : 80),
+      port: url.port || (url.protocol === 'https:' ? 443 : 80),
       path: url.pathname + url.search,
-      method: 'POST',
-      headers: {
-        ...authHeaders(),
-        'Accept': 'application/json',
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        'Content-Length': bodyBuf.length,
-      },
-    };
-
-    const req = lib.request(options, (res) => {
+      method: 'PUT',
+      headers: { 'Content-Type': mimeType, 'Content-Length': fileData.length },
+    }, (res) => {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
-        let parsed;
-        try {
-          parsed = JSON.parse(data);
-        } catch (e) {
-          return reject(new Error(`[bookpod] Non-JSON response (HTTP ${res.statusCode}): ${data.slice(0, 200)}`));
-        }
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(parsed);
-        } else {
-          reject(new Error(`[bookpod] Upload error HTTP ${res.statusCode}: ${JSON.stringify(parsed)}`));
-        }
+        if (res.statusCode >= 200 && res.statusCode < 300) return resolve(true);
+        reject(new Error(`[bookpod] Storage upload failed HTTP ${res.statusCode}: ${data.slice(0, 300)}`));
       });
     });
 
-    req.on('error', (err) => reject(new Error(`[bookpod] Network error during upload: ${err.message}`)));
-    req.write(bodyBuf);
+    req.on('error', (err) => reject(new Error(`[bookpod] Network error during storage upload: ${err.message}`)));
+    req.write(fileData);
     req.end();
   });
 }
 
-// ---------------------------------------------------------------------------
-// Helper: splitStreetAddress
-// ---------------------------------------------------------------------------
-
 /**
- * Attempt to extract a house number from a Hebrew (or Latin) address string.
- *
- * Common Hebrew patterns:
- *   "רחוב הרצל 12"        → { street: "רחוב הרצל", houseNumber: "12" }
- *   "הרצל 12א"            → { street: "הרצל", houseNumber: "12א" }
- *   "12 Main St"          → { street: "Main St", houseNumber: "12" }
- *   "Main St 12"          → { street: "Main St", houseNumber: "12" }
- *   "Main St"             → { street: "Main St", houseNumber: "" }
- *
- * Returns { street: string, houseNumber: string }.
- * If extraction fails, street = fullAddress, houseNumber = "".
- *
- * @param {string} fullAddress
- * @returns {{ street: string, houseNumber: string }}
+ * Convert a signed Google Storage URL into the gs://bucket/object URI that the
+ * book record stores. Both host layouts Google hands out are handled.
+ * The query string — where the signature lives — is dropped on purpose.
  */
-function splitStreetAddress(fullAddress) {
-  if (!fullAddress || typeof fullAddress !== 'string') {
-    return { street: '', houseNumber: '' };
+function signedUrlToGsUri(signedUrl) {
+  let url;
+  try {
+    url = new URL(signedUrl);
+  } catch {
+    return null;
+  }
+  const objectPath = url.pathname.replace(/^\/+/, '');
+
+  if (url.hostname === 'storage.googleapis.com') {
+    const slash = objectPath.indexOf('/');
+    if (slash === -1) return null;
+    return `gs://${objectPath.slice(0, slash)}/${objectPath.slice(slash + 1)}`;
   }
 
-  const addr = fullAddress.trim();
+  const hostMatch = url.hostname.match(/^(.+)\.storage\.googleapis\.com$/);
+  if (hostMatch) return `gs://${hostMatch[1]}/${objectPath}`;
 
-  // Pattern 1: number (optionally followed by Hebrew letter/letter) at END of string
-  // e.g. "הרצל 12" or "הרצל 12א" or "Main St 12B"
-  const trailingNum = addr.match(/^(.+?)\s+(\d+[\u05D0-\u05EAa-zA-Z]?)$/u);
-  if (trailingNum) {
-    return { street: trailingNum[1].trim(), houseNumber: trailingNum[2].trim() };
-  }
-
-  // Pattern 2: number at START of string (Western format)
-  // e.g. "12 Main St"
-  const leadingNum = addr.match(/^(\d+[\u05D0-\u05EAa-zA-Z]?)\s+(.+)$/u);
-  if (leadingNum) {
-    return { street: leadingNum[2].trim(), houseNumber: leadingNum[1].trim() };
-  }
-
-  // No number found
-  return { street: addr, houseNumber: '' };
+  return null;
 }
 
 // ---------------------------------------------------------------------------
 // Public API functions
 // ---------------------------------------------------------------------------
 
-// NOTE: There is no balance/credits endpoint in the Bookpod API (confirmed from
-// the official docs + the official WordPress plugin). Account credits are viewed
-// in the Bookpod dashboard. Live wiring is verified by the draft upload itself.
+// NOTE: There is no balance/credits endpoint in the Bookpod API. Account credits
+// are viewed in the Bookpod dashboard.
 
 /**
- * Create a book draft on Bookpod.
+ * STEP 1 of createBook, exposed on its own so the wiring can be verified without
+ * creating anything: it only asks for upload slots. Nothing is written to the
+ * Bookpod account, no file is transferred, no credits are touched.
  *
- * status is always set to false (draft) — owner must manually activate
- * or a separate publish step must be called after owner confirmation.
+ * POST /api/v1/books/upload-url
+ * @returns {Promise<{contentUploadUrl: string, coverUploadUrl: string}>}
+ */
+async function requestUploadUrls(contentFileName, coverFileName) {
+  const res = await apiRequest('POST', '/api/v1/books/upload-url', {
+    contentFileName,
+    coverFileName,
+  });
+
+  const contentUploadUrl = res.contentUploadUrl;
+  const coverUploadUrl = res.coverUploadUrl;
+  if (!contentUploadUrl || !coverUploadUrl) {
+    throw new Error(`[bookpod] upload-url: response missing upload URLs. Full response: ${JSON.stringify(res)}`);
+  }
+  return { contentUploadUrl, coverUploadUrl };
+}
+
+/**
+ * Create a book record on Bookpod, in the three steps their current API requires:
+ *   1. ask for signed upload URLs
+ *   2. PUT both PDFs straight to Google Cloud Storage
+ *   3. create the book record, referencing the uploaded files by gs:// URI
  *
- * // POST /api/v1/books
+ * This creates a book in the account but consumes NO credits — only an order does.
+ * `showInStore: false` keeps it off Bookpod's public storefront. Note that this is
+ * a storefront-visibility flag and NOT a draft state: the book itself is real and
+ * live in the account either way. (The old comment here claimed it meant "draft",
+ * which was wrong.) `external_id` is gone too — it does not exist anywhere in the
+ * current API; traceability now runs through reference_num1 on the order.
  *
- * @param {string} bookId         Internal Lifebook bookId (used as external reference)
- * @param {string} contentPdfPath Absolute path to the interior content PDF (28 pages, 22.64×22.64 cm, 300DPI)
- * @param {string} coverPdfPath   Absolute path to the cover PDF (flat: back+spine+front)
+ * @param {string} bookId         Internal Lifebook bookId — names the files and titles the book
+ * @param {string} contentPdfPath Absolute path to the interior PDF (28 pages, 19x28.5cm + bleed)
+ * @param {string} coverPdfPath   Absolute path to the flat cover PDF (one sheet, front|spine|back)
+ * @param {object} [options]      Overrides for PRINT_DEFAULTS
  * @returns {Promise<string>}     Bookpod book ID
  */
-async function createBook(bookId, contentPdfPath, coverPdfPath) {
+async function createBook(bookId, contentPdfPath, coverPdfPath, options = {}) {
   console.log(`[bookpod] createBook: bookId=${bookId} content=${contentPdfPath} cover=${coverPdfPath}`);
 
   if (!fs.existsSync(contentPdfPath)) {
@@ -266,108 +262,72 @@ async function createBook(bookId, contentPdfPath, coverPdfPath) {
     throw new Error(`[bookpod] createBook: cover PDF not found at ${coverPdfPath}`);
   }
 
-  // status=false → draft (NOT live) until owner confirms
-  const fields = {
-    external_id: bookId,
-    status: 'false', // DRAFT — do not publish automatically
+  const spec = { ...PRINT_DEFAULTS, ...options };
+  const contentFileName = `${bookId}-content.pdf`;
+  const coverFileName = `${bookId}-cover.pdf`;
+
+  // ── Step 1: ask for upload slots ──────────────────────────────────────────
+  console.log('[bookpod] createBook: step 1/3 — requesting signed upload URLs...');
+  const { contentUploadUrl, coverUploadUrl } = await requestUploadUrls(contentFileName, coverFileName);
+
+  const contentUrl = signedUrlToGsUri(contentUploadUrl);
+  const coverUrl = signedUrlToGsUri(coverUploadUrl);
+  if (!contentUrl || !coverUrl) {
+    throw new Error('[bookpod] createBook: could not derive gs:// URIs from the signed upload URLs');
+  }
+
+  // ── Step 2: transfer the PDFs to Google Cloud Storage ─────────────────────
+  console.log('[bookpod] createBook: step 2/3 — uploading both PDFs to storage...');
+  await putFileToSignedUrl(contentUploadUrl, contentPdfPath, 'application/pdf');
+  await putFileToSignedUrl(coverUploadUrl, coverPdfPath, 'application/pdf');
+
+  // ── Step 3: create the book record ────────────────────────────────────────
+  console.log('[bookpod] createBook: step 3/3 — creating the book record...');
+  const payload = {
+    title:            spec.title || `Lifebook ${bookId}`,
+    author:           spec.author,
+    category:         [],
+    subcategory:      '',
+    keywords:         '',
+    description:      '',
+    price:            null,
+    publisher:        '',
+    language:         spec.language,
+    bookType:         'print',
+    epubprice:        null,
+    printcolor:       spec.printcolor,
+    sheettype:        spec.sheettype,
+    laminationtype:   spec.laminationtype,
+    finishtype:       spec.finishtype,
+    readingdirection: spec.readingdirection,
+    width:            spec.widthCm,
+    height:           spec.heightCm,
+    bleed:            spec.bleed,
+    status:           spec.showInStore,
+    contentUrl,
+    coverUrl,
+    ebookFile:        null,
   };
 
-  const files = [
-    { name: 'content_file', filePath: contentPdfPath, mimeType: 'application/pdf' },
-    { name: 'cover_file',   filePath: coverPdfPath,   mimeType: 'application/pdf' },
-  ];
+  const response = await apiRequest('POST', '/api/v1/books', payload);
 
-  const response = await apiUpload('/api/v1/books', fields, files);
-
-  const bookpodBookId = response.id ?? response.book_id ?? response.bookId;
+  const bookpodBookId = response.bookId ?? response.bookid ?? response.id;
   if (!bookpodBookId) {
     throw new Error(`[bookpod] createBook: response missing book ID. Full response: ${JSON.stringify(response)}`);
   }
 
-  console.log(`[bookpod] createBook: done — bookpodBookId=${bookpodBookId} (status=draft)`);
+  console.log(`[bookpod] createBook: done — bookpodBookId=${bookpodBookId} (not shown in store)`);
   return String(bookpodBookId);
 }
 
 /**
- * !! OWNER APPROVAL REQUIRED — reads pre-paid credits and triggers physical production !!
- *
- * Create a print order for an approved book draft.
- *
- * Generates a unique reference_num1 = `${referenceBookId}-${Date.now()}` so
- * every order is traceable back to the Lifebook bookId in Bookpod's system.
- *
- * shippingDetails shape:
- * {
- *   firstName:   string,
- *   lastName:    string,
- *   email:       string,
- *   phone:       string,
- *   address:     string,   // full street address (house number may be embedded)
- *   city:        string,
- *   postalCode:  string,
- *   country:     string,   // ISO 3166-1 alpha-2, default 'IL'
- *   // Optional — if provided, overrides auto-split:
- *   houseNumber: string,
- * }
- *
- * // POST /api/v1/orders
- *
- * @param {string} bookpodBookId      Bookpod internal book ID
- * @param {object} shippingDetails
- * @param {string} referenceBookId    Internal Lifebook bookId for the reference field
- * @returns {Promise<{ orderId: string, trackingNumber: string|null, status: string }>}
+ * !! OWNER APPROVAL REQUIRED — consumes pre-paid credits and prints a physical book !!
+ * Implemented in bookpod-order.cjs. Re-exported here so callers keep one entry
+ * point. The require is lazy purely to keep the two modules from importing each
+ * other at load time.
  */
-async function createOrder(bookpodBookId, shippingDetails, referenceBookId) {
-  // ============================================================
-  // !! OWNER APPROVAL REQUIRED — do not call in automated flows !!
-  // ============================================================
-  console.log(`[bookpod] createOrder: bookpodBookId=${bookpodBookId} referenceBookId=${referenceBookId}`);
-  console.log('[bookpod] createOrder: !! This call consumes pre-paid credits and triggers physical printing !!');
-
-  const referenceNum = `${referenceBookId}-${Date.now()}`;
-
-  // Split house number if not explicitly provided
-  let street = shippingDetails.address || '';
-  let houseNumber = shippingDetails.houseNumber || '';
-
-  if (!houseNumber && street) {
-    const split = splitStreetAddress(street);
-    street = split.street;
-    houseNumber = split.houseNumber;
-  }
-
-  const payload = {
-    book_id:       bookpodBookId,
-    reference_num1: referenceNum,
-    shipping: {
-      first_name:   shippingDetails.firstName  || '',
-      last_name:    shippingDetails.lastName   || '',
-      email:        shippingDetails.email      || '',
-      phone:        shippingDetails.phone      || '',
-      street:       street,
-      house_number: houseNumber,
-      city:         shippingDetails.city       || '',
-      postal_code:  shippingDetails.postalCode || '',
-      country:      shippingDetails.country    || 'IL',
-    },
-  };
-
-  const response = await apiRequest('POST', '/api/v1/orders', payload);
-
-  const orderId = response.id ?? response.order_id ?? response.orderId;
-  if (!orderId) {
-    throw new Error(`[bookpod] createOrder: response missing order ID. Full response: ${JSON.stringify(response)}`);
-  }
-
-  const result = {
-    orderId:        String(orderId),
-    trackingNumber: response.tracking_number ?? response.trackingNumber ?? null,
-    status:         response.status ?? 'created',
-    referenceNum,
-  };
-
-  console.log(`[bookpod] createOrder: done — orderId=${result.orderId} tracking=${result.trackingNumber} status=${result.status}`);
-  return result;
+function createOrder(...args) {
+  return require('./bookpod-order.cjs').createOrder(...args);
 }
 
 // ---------------------------------------------------------------------------
@@ -375,10 +335,14 @@ async function createOrder(bookpodBookId, shippingDetails, referenceBookId) {
 // ---------------------------------------------------------------------------
 
 module.exports = {
-  // Helpers
-  splitStreetAddress,
+  // Shared plumbing, used by bookpod-order.cjs
+  apiRequest,
 
   // API functions
+  requestUploadUrls,   // step 1 only — creates nothing, costs nothing
   createBook,
-  createOrder,       // !! OWNER APPROVAL REQUIRED before calling in production !!
+  createOrder,         // !! OWNER APPROVAL REQUIRED — see bookpod-order.cjs !!
+
+  // Exposed for tests
+  __test: { signedUrlToGsUri, PRINT_DEFAULTS },
 };
