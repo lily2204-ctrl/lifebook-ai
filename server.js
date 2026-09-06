@@ -3194,6 +3194,10 @@ app.get("/api/admin/print-orders", requireAdminAuth, async (req, res) => {
         shipping:      o.shipping,
         contentPdfUrl: o.contentPdfUrl,
         coverPdfUrl:   o.coverPdfUrl,
+        // Set once the book exists on Bookpod. Present on a card that was
+        // approved but stopped at the order gate — it is what lets the station
+        // read the book's name back, and what stops a second one being created.
+        bookpodBookId: o.bookpodBookId,
       };
     }));
     return res.json({ orders: enriched });
@@ -3393,6 +3397,35 @@ app.post("/api/admin/bookpod/check", requireAdminAuth, async (req, res) => {
     });
   } catch (err) {
     console.error("[bookpod] connection check FAILED:", err.message);
+    return res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
+// What name does a book ACTUALLY carry in the Bookpod account? Their API has no
+// rename and no delete, so a wrong title is permanent — which makes reading the
+// stored value back worth more than trusting what we believe we sent. Read-only:
+// creates nothing, changes nothing, costs nothing.
+app.post("/api/admin/bookpod/verify", requireAdminAuth, async (req, res) => {
+  const bookpodBookId = String(req.body?.bookpodBookId || "").trim();
+  if (!bookpodBookId) return res.status(400).json({ ok: false, error: "חסר מזהה ספר בוקפוד" });
+  try {
+    const { bookpod } = await loadPrintModules();
+    const info = await bookpod.verifyBook(bookpodBookId);
+    console.log(`[bookpod] verify ${bookpodBookId}: found=${info.found} owner=${info.isOwner} title="${info.title}"`);
+
+    // Their two negative answers arrive inside a 200, so they are reported as a
+    // clean "no" rather than as a failure of the check itself.
+    if (!info.found)   return res.json({ ok: false, error: `ספר ${bookpodBookId} לא נמצא בבוקפוד` });
+    if (!info.isOwner) return res.json({ ok: false, error: `ספר ${bookpodBookId} לא שייך לחשבון שלנו` });
+
+    return res.json({
+      ok:          true,
+      bookpodBookId,
+      title:       info.title,
+      description: info.description,
+    });
+  } catch (err) {
+    console.error(`[bookpod] verify ${bookpodBookId} FAILED:`, err.message);
     return res.status(502).json({ ok: false, error: err.message });
   }
 });

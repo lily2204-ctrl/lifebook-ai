@@ -102,6 +102,29 @@
     #connResult { margin:-12px 0 20px; font-size:0.9rem; }
     #connResult.ok  { color:#1e8449; }
     #connResult.err { color:#c0392b; }
+    /* Read a book's name back out of the Bookpod account. Read-only, no cost. */
+    #verifyRow { display:flex; gap:8px; align-items:center; margin:-8px 0 20px; flex-wrap:wrap; }
+    #verifyIdInput {
+      border:1px solid #e0d5c0; border-radius:8px; padding:8px 12px;
+      font-family:inherit; font-size:0.9rem; width:220px; background:#fff; color:var(--dark);
+    }
+    #verifyBtn {
+      background:transparent; border:1px solid var(--gold); color:var(--gold); border-radius:8px;
+      padding:8px 20px; font-family:inherit; font-size:0.9rem; cursor:pointer;
+    }
+    #verifyBtn:hover { background:#fdf3de; }
+    #verifyBtn:disabled { opacity:0.5; cursor:default; background:transparent; }
+    #verifyResult { font-size:0.9rem; }
+    #verifyResult.ok  { color:#1e8449; }
+    #verifyResult.err { color:#c0392b; }
+    .order-bookpod { font-size:0.85rem; color:#7a6a55; margin-top:10px; }
+    .order-bookpod code { background:#f6efe2; padding:2px 6px; border-radius:4px; }
+    .verify-card-btn {
+      background:transparent; border:1px solid #d8c9a8; color:#8a7550; border-radius:6px;
+      padding:4px 12px; font-family:inherit; font-size:0.82rem; cursor:pointer; margin-inline-start:8px;
+    }
+    .verify-card-btn:hover { background:#fdf3de; }
+    .verify-card-btn:disabled { opacity:0.5; cursor:default; }
   </style>
 </head>
 <body>
@@ -129,6 +152,11 @@
   <button id="refreshBtn">↻ רענן</button>
   <button id="checkConnBtn">בדוק חיבור לבוקפוד</button>
   <div id="connResult"></div>
+  <div id="verifyRow">
+    <input type="text" id="verifyIdInput" placeholder="מזהה ספר בבוקפוד" inputmode="numeric">
+    <button id="verifyBtn">בדוק שם ספר</button>
+    <span id="verifyResult"></span>
+  </div>
   <div id="ordersList"></div>
   <div id="ordersEmpty" style="display:none">אין כרגע הזמנות דפוס הממתינות לאישור.</div>
   <div id="ordersError"></div>
@@ -226,6 +254,51 @@ document.getElementById("checkConnBtn").addEventListener("click", async (e) => {
   btn.disabled = false;
 });
 
+// Reads a book's name back out of the Bookpod account. Their API has no rename
+// and no delete, so this answers the only question that matters after a book is
+// created: what name is now stuck on it. Read-only — creates nothing, costs
+// nothing. Returns a {ok, title, ...} object, or null on a network failure.
+async function verifyBookpodBook(bookpodBookId) {
+  const res  = await apiFetch("/api/admin/bookpod/verify", {
+    method: "POST",
+    body:   JSON.stringify({ bookpodBookId }),
+  });
+  if (res.status === 401) { handleExpiredToken(); return null; }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok && !data.error) data.error = `נכשל (HTTP ${res.status})`;
+  return data;
+}
+
+document.getElementById("verifyBtn").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  const out = document.getElementById("verifyResult");
+  const id  = document.getElementById("verifyIdInput").value.trim();
+  if (!id) {
+    out.className = "err";
+    out.textContent = "❌ הזיני מזהה ספר";
+    return;
+  }
+  btn.disabled = true;
+  out.className = "";
+  out.textContent = "בודק...";
+  try {
+    const data = await verifyBookpodBook(id);
+    if (!data) return;
+    if (data.ok) {
+      out.className = "ok";
+      out.textContent = `✅ ${data.title || "(ללא שם)"}`;
+      out.title = data.description ? `תיאור: ${data.description}` : "";
+    } else {
+      out.className = "err";
+      out.textContent = "❌ " + (data.error || "לא נמצא");
+    }
+  } catch {
+    out.className = "err";
+    out.textContent = "❌ שגיאת רשת — נסי שוב";
+  }
+  btn.disabled = false;
+});
+
 function handleExpiredToken() {
   token = null;
   sessionStorage.removeItem("adminToken");
@@ -298,6 +371,12 @@ function renderOrders(orders) {
       ${heldNote ? `<div class="held-note">${heldNote}</div>` : ""}
       <div class="order-ship">${shipLines || "— אין פרטי משלוח —"}</div>
       <div class="order-links">${contentLink}${coverLink}</div>
+      ${o.bookpodBookId ? `
+      <div class="order-bookpod">
+        📗 ספר בבוקפוד: <code>${o.bookpodBookId}</code>
+        <button class="verify-card-btn" data-bpid="${o.bookpodBookId}">בדוק שם</button>
+        <span class="verify-card-out"></span>
+      </div>` : ""}
       <button class="approve-btn" data-id="${o.id}"${(hasPdfs && !heldNote) ? "" : " disabled"}>אשר ושלח לדפוס</button>
       <button class="genpdf-btn" data-id="${o.id}"${heldNote ? " disabled" : ""}>${genLabel}</button>
       <div class="order-result" id="result-${o.id}">${hasPdfs ? "" : "יש להפיק את הקבצים ולבדוק אותם לפני האישור"}</div>
@@ -309,6 +388,29 @@ function renderOrders(orders) {
     const genBtn = card.querySelector(".genpdf-btn");
     if (heldNote) genBtn.title = heldNote;
     genBtn.addEventListener("click", () => generatePdfs(o, genBtn, hasPdfs));
+
+    const vBtn = card.querySelector(".verify-card-btn");
+    if (vBtn) {
+      const vOut = card.querySelector(".verify-card-out");
+      vBtn.addEventListener("click", async () => {
+        vBtn.disabled = true;
+        vOut.style.color = "#7a6a55";
+        vOut.textContent = " בודק...";
+        try {
+          const data = await verifyBookpodBook(vBtn.dataset.bpid);
+          if (!data) return;
+          vOut.style.color = data.ok ? "#1e7a3c" : "#c0392b";
+          vOut.textContent = data.ok
+            ? ` ✅ ${data.title || "(ללא שם)"}`
+            : ` ❌ ${data.error || "לא נמצא"}`;
+        } catch {
+          vOut.style.color = "#c0392b";
+          vOut.textContent = " ❌ שגיאת רשת";
+        }
+        vBtn.disabled = false;
+      });
+    }
+
     list.appendChild(card);
   });
 }

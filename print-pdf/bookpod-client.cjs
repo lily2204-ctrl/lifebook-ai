@@ -238,6 +238,40 @@ async function requestUploadUrls(contentFileName, coverFileName) {
 }
 
 /**
+ * Read back a book that already exists in the Bookpod account.
+ *
+ * The only read endpoint their API has, and the only way to see what actually
+ * landed rather than what we believe we sent — which matters because `title` is
+ * the sole naming field and cannot be corrected afterwards. Read-only: creates
+ * nothing, changes nothing, costs nothing.
+ *
+ * `uid` duplicates the x-user-id header in the body; that is how their own
+ * plugin calls it (bpat-woocommerce-products.php:453-462), so we match it.
+ *
+ * @param {string|number} bookpodBookId The id Bookpod returned from createBook
+ * @returns {Promise<{found: boolean, isOwner: boolean, title: string, description: string, raw: object}>}
+ */
+async function verifyBook(bookpodBookId) {
+  const res = await apiRequest('POST', '/api/v1/books/verify', {
+    bookid: String(bookpodBookId),
+    is_set: 'no',
+    uid:    USER_ID,
+  });
+
+  // Their two negative answers arrive as flags inside a 200, not as HTTP errors.
+  const found   = !res.notFound;
+  const isOwner = Boolean(res.isOwner);
+
+  return {
+    found,
+    isOwner,
+    title:       String(res.title || ''),
+    description: String(res.description || ''),
+    raw:         res,
+  };
+}
+
+/**
  * Create a book record on Bookpod, in the three steps their current API requires:
  *   1. ask for signed upload URLs
  *   2. PUT both PDFs straight to Google Cloud Storage
@@ -344,6 +378,7 @@ module.exports = {
 
   // API functions
   requestUploadUrls,   // step 1 only — creates nothing, costs nothing
+  verifyBook,          // read-only — creates nothing, costs nothing
   createBook,
   createOrder,         // !! OWNER APPROVAL REQUIRED — see bookpod-order.cjs !!
 
