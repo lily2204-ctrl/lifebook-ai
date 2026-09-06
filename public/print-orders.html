@@ -99,7 +99,7 @@
     #refreshBtn:hover, #checkConnBtn:hover { background:#fdf3de; }
     #checkConnBtn { margin-right:8px; }
     #checkConnBtn:disabled { opacity:0.5; cursor:default; background:transparent; }
-    #connResult { margin:-12px 0 20px; font-size:0.9rem; }
+    #connResult { margin:-12px 0 20px; font-size:0.9rem; white-space:pre-line; word-break:break-all; line-height:1.7; }
     #connResult.ok  { color:#1e8449; }
     #connResult.err { color:#c0392b; }
     /* Read a book's name back out of the Bookpod account. Read-only, no cost. */
@@ -242,7 +242,10 @@ document.getElementById("checkConnBtn").addEventListener("click", async (e) => {
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.ok) {
       out.className = "ok";
-      out.textContent = "✅ " + (data.message || "החיבור תקין");
+      // Show the storage address a real run would attach to the book, not just a
+      // green tick: this is the one part of the flow that is otherwise invisible.
+      out.textContent = "✅ " + (data.message || "החיבור תקין")
+        + (data.contentGsUri ? "\nיעד הקבצים: " + data.contentGsUri : "");
     } else {
       out.className = "err";
       out.textContent = "❌ " + (data.error || `נכשל (HTTP ${res.status})`);

@@ -213,6 +213,8 @@ These cannot be fixed in code — need dashboard access:
 
 ## Future Cards — Not Blocking
 - **Barcode / ISBN on the back cover** (opened 2026-08-30). Bookpod's sample cover carries one; ours does not, and from Ariel's book we know the barcode is the author's responsibility, not theirs. The proof copy deliberately ships without one. To settle later: is a barcode required at all for a personalised, non-retail product, and if so what goes in it (ISBN? an internal order code?).
+- **"הספר בדרך" email + shipment tracking** (opened 2026-09-06, not urgent — after the proof copy arrives). Bookpod confirmed in writing that a tracking API exists and that an automatic email is sent, but gave no endpoint and no response shape; their own WordPress plugin uses neither. Two things to settle with them: the tracking API details, and **who their automatic email goes to** — we send the customer's own address in `shippingDetails`, so it may reach her directly, in Bookpod's name. Build our email only after that answer, or she gets two mails for one event. Working timings from them, **never to be promised to a customer**: printing 1–2 working days, shipping 3–5, no commitment. See LIFEBOOK_SPEC.md §5.
+- **Print station: approved orders vanish from the list** (opened 2026-09-06). `listPendingPrintOrders()` filters on `status = awaiting_admin_approval`, so a card disappears the moment it is approved. Wanted: a "sent to print" tab keeping the card visible with its Bookpod ids, the date, and a link to `https://dash.bookpod.co.il/dashboard/fullorder/{order_no}`.
 
 ## Known Bugs — Open
 - **Frame-page typography is not under our control** (opened 2026-08-26, owner: verify on the printed proof first).
