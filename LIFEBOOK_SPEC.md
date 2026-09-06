@@ -233,9 +233,22 @@ PDFKit כותב במילון העמוד **רק `/MediaBox`**. קובץ שמופ�
 
 ### הזמנה — `POST /api/v1/orders`
 
-מבנה שונה לחלוטין ממה שהקוד הישן שלח (`bpat-order.php:44-50`, `:249-380`): `shippingDetails` עם `name`/`phoneNumber`/`zipCode`/`house`/`shippingMethod`/`shippingCompanyId`/`acceptTerms`, מערך `items` עם `{type:'book', bookid, quantity}`, ו-`totalprice`. התשובה: `{success, order_no}` — **ייתכן `success:false` בתוך HTTP 200**, אז קוד הסטטוס לבדו לא מספיק. אין `tracking_number` בתשובה; מעקב משלוחים הוא זרימה נפרדת.
+מבנה שונה לחלוטין ממה שהקוד הישן שלח (`bpat-order.php:44-50`, `:249-380`): `shippingDetails` עם `name`/`phoneNumber`/`zipCode`/`house`/`shippingMethod`/`shippingCompanyId`/`acceptTerms`, מערך `items` עם `{type:'book', bookid, quantity}`, ו-`totalprice`. התשובה: `{success, order_no}` — **ייתכן `success:false` בתוך HTTP 200**, אז קוד הסטטוס לבדו לא מספיק. אין `tracking_number` בתשובה; מעקב משלוחים הוא זרימה נפרדת — ראו להלן.
 
-הקוד יושב ב-`print-pdf/bookpod-order.cjs` — קובץ נפרד בכוונה — וחסום ב-`BOOKPOD_ORDERS_ENABLED`. בלי המשתנה הזה הפונקציה זורקת לפני שהיא מגיעה לבוקפוד.
+הקוד יושב ב-`print-pdf/bookpod-order.cjs` — קובץ נפרד בכוונה — וחסום ב-`BOOKPOD_ORDERS_ENABLED`. בלי המשתנה הזה הפונקציה זורקת לפני שהיא מגיעה לבוקפוד. **הדגל הוא מפתח, לא הגדרה:** מדליקים אותו בריילוויי נקודתית להזמנה אחת ומכבים מיד אחריה. מאז שנתיב האישור הפך לעמיד-לחזרה (ספר קיים ⇒ דילוג על היצירה), לחיצה עם דגל דלוק מגיעה **ישירות** ל-`createOrder` — אין שער נוסף בין הלחיצה לכסף.
+
+### מעקב משלוחים וזמנים (עודכן 6.9.2026 — תשובת בוקפוד בכתב)
+
+**מה שהתוסף שלהם עושה:** כלום. `bpat-order.php:84-85` שומר `_bpat_bookpod_order_no` ו-`_bpat_bookpod_order_status='sent'` — דגל **מקומי** שלא מתעדכן לעולם. בכל התוסף קיימות חמש קריאות API בסך הכל: `books/upload-url`, `books`, `books/verify`, `books/sync-match`, `orders`. אין `GET /orders`, אין endpoint לסטטוס, ואין webhook חוזר. `bpat-warehouse-webhook-shielding.php` נראה רלוונטי ואינו — הוא מסנן webhooks **יוצאים** מווקומרס לספק מחסן צד-שלישי.
+
+**מה שבוקפוד מסרו בכתב (6.9.2026):** קיים API למעקב, ובנוסף נשלח מייל אוטומטי. **פרטי ה-API טרם התקבלו** — לא endpoint ולא מבנה תשובה. עד שיתקבלו, זו אמירה שלהם ולא יכולת שלנו.
+
+**זמנים שמסרו — נתון עבודה בלבד, ללא התחייבות מצדם:** הדפסה 1–2 ימי עבודה, משלוח 3–5. **אסור להבטיח את המספרים האלה ללקוחה** במייל או בעמוד. הם משמשים אותנו לתכנון פנימי בלבד.
+
+**נגזרות בקוד:**
+- `trackingNumber` בתשובת `POST /api/admin/print-orders/:id/approve` הוא תמיד `null` היום, ונשמר בכוונה כנקודת החיבור העתידית.
+- מייל "הספר יצא להדפסה" (`sendPrintSentToPressEmail`) לא נוקב בזמן משוער, ומייל אישור התשלום נוקה משתי הבטחות שלא יכולנו לקיים (מעקב, "כשבוע").
+- **שאלה פתוחה:** ב-`shippingDetails` אנחנו שולחים את **כתובת המייל של הלקוחה עצמה** (`bookpod-order.cjs:110`). לכן "המייל האוטומטי" שלהם עשוי להגיע ישירות ללקוחה, בשם בוקפוד ולא בשם לייףבוק. לברר לפני שנבנה מייל "הספר בדרך" משלנו — אחרת הלקוחה תקבל שני מיילים על אותו אירוע.
 
 ---
 

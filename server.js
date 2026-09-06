@@ -1039,10 +1039,15 @@ async function sendPrintOrderConfirmationEmail(book) {
 // from the approval station the moment createOrder succeeds — never before, so
 // it can only ever describe something that really happened.
 //
-// It deliberately gives NO delivery estimate. Bookpod's API has no order-status
-// endpoint, no tracking number and no webhook back (verified against their own
-// WordPress plugin, 2026-09-06), so any number here would be a guess we would
-// then have to apologise for. Revisit once Bookpod answer with real timings.
+// It deliberately gives NO delivery estimate. Bookpod told us in writing
+// (2026-09-06) that printing takes 1-2 working days and shipping 3-5, but
+// explicitly without committing to it — so those are numbers to plan against,
+// not numbers to promise a customer. Revisit only if they ever commit.
+//
+// Their own WordPress plugin uses no tracking at all: it stores a local 'sent'
+// flag and never updates it. In the same message, though, they say a tracking
+// API exists and that an automatic email is sent. Neither is wired up here yet
+// — see LIFEBOOK_SPEC.md §5 and the "הספר בדרך" card.
 async function sendPrintSentToPressEmail(book, orderRefs = {}) {
   if (!book.customerEmail) return;
 
@@ -3498,6 +3503,11 @@ app.post("/api/admin/print-orders/:id/approve", requireAdminAuth, async (req, re
       status:         "sent_to_bookpod",
       bookpodBookId:  String(bookpodBookId),
       bookpodOrderId: String(bpOrder.orderId),
+      // Always null today: createOrder's response carries no tracking number, and
+      // their WordPress plugin never asks for one. Kept deliberately, because
+      // Bookpod confirmed in writing (2026-09-06) that a tracking API does exist
+      // — this is the seam the "הספר בדרך" email will plug into once we have the
+      // endpoint from them. See LIFEBOOK_SPEC.md §5.
       trackingNumber: bpOrder.trackingNumber || null,
     });
   } catch (err) {
