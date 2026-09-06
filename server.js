@@ -952,13 +952,12 @@ async function sendPrintOrderConfirmationEmail(book) {
                 <p style="font-size:14px;color:#3a2810;line-height:1.9;margin:0;">
                   <strong style="color:#c8922a;">1.</strong> We prepare your book files and send them to print.<br/>
                   <strong style="color:#c8922a;">2.</strong> Your softcover book is professionally printed and bound.<br/>
-                  <strong style="color:#c8922a;">3.</strong> It ships to the address you provided — you'll get shipping &amp; tracking updates by email.
+                  <strong style="color:#c8922a;">3.</strong> It ships to the address you provided.
                 </p>
               </td></tr>
             </table>
             <p style="font-size:14px;color:#7a6048;line-height:1.7;margin:0 0 8px;">
-              <strong>Estimated time:</strong> printing and delivery usually take about a week.
-              We'll keep you posted at every step — there's nothing you need to do right now. 📦
+              We'll email you the moment your book goes to print — there's nothing you need to do right now. 📦
             </p>
             <hr style="border:none;border-top:1px solid #f0e4d0;margin:24px 0 18px;" />
             <p style="font-size:12px;color:#b09070;line-height:1.6;margin:0;">
@@ -1003,13 +1002,12 @@ async function sendPrintOrderConfirmationEmail(book) {
                 <p style="font-size:14px;color:#3a2810;line-height:1.9;margin:0;">
                   <strong style="color:#c8922a;">1.</strong> אנחנו מכינים את קובצי הספר ושולחים אותם לדפוס.<br/>
                   <strong style="color:#c8922a;">2.</strong> הספר בכריכה רכה מודפס ונכרך באיכות מקצועית.<br/>
-                  <strong style="color:#c8922a;">3.</strong> הוא נשלח לכתובת שמסרתם — ועדכוני המשלוח והמעקב יגיעו אליכם במייל.
+                  <strong style="color:#c8922a;">3.</strong> הוא נשלח לכתובת שמסרתם.
                 </p>
               </td></tr>
             </table>
             <p style="font-size:14px;color:#7a6048;line-height:1.7;margin:0 0 8px;">
-              <strong>זמן משוער:</strong> ההדפסה והמשלוח לוקחים בדרך כלל כשבוע.
-              נעדכן אתכם בכל שלב — אין שום דבר שצריך לעשות כרגע. 📦
+              נעדכן אתכם במייל ברגע שהספר יוצא להדפסה — אין שום דבר שצריך לעשות כרגע. 📦
             </p>
             <hr style="border:none;border-top:1px solid #f0e4d0;margin:24px 0 18px;" />
             <p style="font-size:12px;color:#b09070;line-height:1.6;margin:0;">
@@ -1033,6 +1031,158 @@ async function sendPrintOrderConfirmationEmail(book) {
     console.log("Printed-order confirmation email sent to:", book.customerEmail);
   } catch(err) {
     console.error("Failed to send printed-order confirmation email:", err.message);
+  }
+}
+
+// ─── Email: Printed book sent to press ───────────────────────────────────────
+// Closes the silence between "we took your money" and "a parcel arrived". Sent
+// from the approval station the moment createOrder succeeds — never before, so
+// it can only ever describe something that really happened.
+//
+// It deliberately gives NO delivery estimate. Bookpod's API has no order-status
+// endpoint, no tracking number and no webhook back (verified against their own
+// WordPress plugin, 2026-09-06), so any number here would be a guess we would
+// then have to apologise for. Revisit once Bookpod answer with real timings.
+async function sendPrintSentToPressEmail(book, orderRefs = {}) {
+  if (!book.customerEmail) return;
+
+  const appUrl    = process.env.APP_URL || "https://app.lifebooksil.com";
+  const childName = book.childName || "your child";
+  const bookTitle = book.generatedBook?.title || `${childName}'s Magical Adventure`;
+  const lang      = book.language || "he";
+
+  const pressNo   = orderRefs.bookpodOrderId  ? String(orderRefs.bookpodOrderId)  : "";
+  const shopNo    = orderRefs.shopifyOrderId  ? String(orderRefs.shopifyOrderId)  : "";
+
+  const refsHe = [
+    shopNo  ? `<strong>מספר ההזמנה שלכם:</strong> ${shopNo}` : "",
+    pressNo ? `<strong>מספר ההזמנה בבית הדפוס:</strong> ${pressNo}` : "",
+  ].filter(Boolean).join("<br/>");
+  const refsEn = [
+    shopNo  ? `<strong>Your order number:</strong> ${shopNo}` : "",
+    pressNo ? `<strong>Print-house order number:</strong> ${pressNo}` : "",
+  ].filter(Boolean).join("<br/>");
+
+  try {
+    await resend.emails.send({
+      from:    "Lifebook <lifebooks@lifebooksil.com>",
+      to:      book.customerEmail,
+      subject: lang === "en"
+        ? `🖨️ ${childName}'s book has gone to print`
+        : `🖨️ הספר של ${childName} יצא להדפסה`,
+      html: lang === "en" ? `
+<!DOCTYPE html>
+<html dir="ltr">
+<head><meta charset="UTF-8"/></head>
+<body style="margin:0;padding:0;background:#fdf6ec;font-family:Assistant,Arial,sans-serif;direction:ltr;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#fdf6ec;padding:40px 0;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:24px;overflow:hidden;box-shadow:0 8px 40px rgba(100,60,20,0.12);border:1px solid #ede0c8;">
+        <tr>
+          <td style="background:linear-gradient(135deg,#1a1008,#5c3d1e);padding:36px;text-align:center;">
+            <img src="https://lifebooksil.com/assets/branding/lifebook-logo.webp" alt="Lifebook" style="height:54px;width:auto;display:block;margin:0 auto 10px;" />
+            <div style="font-size:11px;color:#c4a87a;margin-top:5px;letter-spacing:2px;text-transform:uppercase;">Personalized Children's Books</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:36px 40px;direction:ltr;text-align:left;">
+            <p style="font-family:Assistant,Arial,sans-serif;font-size:26px;color:#3a2810;margin:0 0 12px;line-height:1.2;font-weight:700;">Your book has gone to print 🖨️</p>
+            <p style="font-size:15px;color:#7a6048;line-height:1.7;margin:0 0 24px;">
+              We went through <strong>${childName}</strong>'s book — <em>"${bookTitle}"</em> — page by page, approved it,
+              and it is now with our print house.
+            </p>
+            <table cellpadding="0" cellspacing="0" width="100%" style="background:#fdf6ec;border-radius:14px;border:1px solid #ede0c8;margin-bottom:24px;">
+              <tr><td style="padding:20px 22px;direction:ltr;text-align:left;">
+                <p style="font-size:14px;color:#3a2810;line-height:1.9;margin:0;">
+                  <strong style="color:#c8922a;">1.</strong> The book is printed as a softcover on quality paper.<br/>
+                  <strong style="color:#c8922a;">2.</strong> It is packed and shipped to the address you provided.<br/>
+                  <strong style="color:#c8922a;">3.</strong> From here there is nothing left to do — your parcel is on its way.
+                </p>
+              </td></tr>
+            </table>
+            ${refsEn ? `<p style="font-size:14px;color:#7a6048;line-height:1.8;margin:0 0 8px;">
+              ${refsEn}<br/>
+              <span style="color:#b09070;">Keep these in case you need to contact us about your delivery.</span>
+            </p>` : ""}
+            <p style="font-size:14px;color:#7a6048;line-height:1.7;margin:0;">
+              We'll email you again as soon as the parcel leaves. 📦
+            </p>
+            <hr style="border:none;border-top:1px solid #f0e4d0;margin:24px 0 18px;" />
+            <p style="font-size:12px;color:#b09070;line-height:1.6;margin:0;">
+              Questions? Just reply to this email and we'll be happy to help.<br/>
+              Thank you for creating with Lifebook 💛
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#fdf6ec;border-top:1px solid #ede0c8;padding:16px 40px;text-align:center;">
+            <p style="font-size:11px;color:#c4a87a;margin:0;">© 2026 Lifebook · <a href="${appUrl}/contact.html" style="color:#c8922a;text-decoration:none;">Contact Us</a></p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+      `.trim() : `
+<!DOCTYPE html>
+<html dir="rtl">
+<head><meta charset="UTF-8"/></head>
+<body style="margin:0;padding:0;background:#fdf6ec;font-family:Assistant,Arial,sans-serif;direction:rtl;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#fdf6ec;padding:40px 0;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:24px;overflow:hidden;box-shadow:0 8px 40px rgba(100,60,20,0.12);border:1px solid #ede0c8;">
+        <tr>
+          <td style="background:linear-gradient(135deg,#1a1008,#5c3d1e);padding:36px;text-align:center;">
+            <img src="https://lifebooksil.com/assets/branding/lifebook-logo.webp" alt="Lifebook" style="height:54px;width:auto;display:block;margin:0 auto 10px;" />
+            <div style="font-size:11px;color:#c4a87a;margin-top:5px;letter-spacing:2px;text-transform:uppercase;">ספרי ילדים מותאמים אישית</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:36px 40px;direction:rtl;text-align:right;">
+            <p style="font-family:Assistant,Arial,sans-serif;font-size:26px;color:#3a2810;margin:0 0 12px;line-height:1.2;font-weight:700;">הספר יצא להדפסה 🖨️</p>
+            <p style="font-size:15px;color:#7a6048;line-height:1.7;margin:0 0 24px;">
+              עברנו על הספר של <strong>${childName}</strong> — <em>"${bookTitle}"</em> — עמוד אחר עמוד, אישרנו אותו,
+              והוא נמצא עכשיו אצל בית הדפוס שלנו.
+            </p>
+            <table cellpadding="0" cellspacing="0" width="100%" style="background:#fdf6ec;border-radius:14px;border:1px solid #ede0c8;margin-bottom:24px;">
+              <tr><td style="padding:20px 22px;direction:rtl;text-align:right;">
+                <p style="font-size:14px;color:#3a2810;line-height:1.9;margin:0;">
+                  <strong style="color:#c8922a;">1.</strong> הספר מודפס בכריכה רכה על נייר איכותי.<br/>
+                  <strong style="color:#c8922a;">2.</strong> הוא נארז ונשלח לכתובת שמסרתם.<br/>
+                  <strong style="color:#c8922a;">3.</strong> מרגע זה אין שום דבר שצריך לעשות — החבילה בדרך.
+                </p>
+              </td></tr>
+            </table>
+            ${refsHe ? `<p style="font-size:14px;color:#7a6048;line-height:1.8;margin:0 0 8px;">
+              ${refsHe}<br/>
+              <span style="color:#b09070;">שמרו אותם למקרה שתרצו לפנות אלינו בנוגע למשלוח.</span>
+            </p>` : ""}
+            <p style="font-size:14px;color:#7a6048;line-height:1.7;margin:0;">
+              נעדכן אתכם במייל ברגע שהחבילה יוצאת. 📦
+            </p>
+            <hr style="border:none;border-top:1px solid #f0e4d0;margin:24px 0 18px;" />
+            <p style="font-size:12px;color:#b09070;line-height:1.6;margin:0;">
+              יש שאלות? פשוט ענו למייל הזה ונשמח לעזור.<br/>
+              תודה שיצרתם עם Lifebook 💛
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#fdf6ec;border-top:1px solid #ede0c8;padding:16px 40px;text-align:center;">
+            <p style="font-size:11px;color:#c4a87a;margin:0;">© 2026 Lifebook · <a href="${appUrl}/contact.html" style="color:#c8922a;text-decoration:none;">צור קשר</a></p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+      `.trim()
+    });
+    console.log("Sent-to-press email sent to:", book.customerEmail);
+  } catch(err) {
+    console.error("Failed to send sent-to-press email:", err.message);
   }
 }
 
@@ -3329,6 +3479,21 @@ app.post("/api/admin/print-orders/:id/approve", requireAdminAuth, async (req, re
     });
     console.log(`[admin] approve print order ${id}: SENT — bookpodBookId=${bookpodBookId} bookpodOrderId=${bpOrder.orderId}`);
 
+    // Tell the customer, but never at the cost of the approval itself: the order
+    // is already placed and irreversible by this point, so a mail failure must
+    // not turn a successful click into a red error that invites a second one.
+    try {
+      const bookForEmail = await getBookLight(order.bookId);
+      if (bookForEmail) {
+        await sendPrintSentToPressEmail(bookForEmail, {
+          bookpodOrderId: bpOrder.orderId,
+          shopifyOrderId: order.shopifyOrderId,
+        });
+      }
+    } catch (mailErr) {
+      console.error(`[admin] approve print order ${id}: sent-to-press email failed:`, mailErr.message);
+    }
+
     return res.json({
       status:         "sent_to_bookpod",
       bookpodBookId:  String(bookpodBookId),
@@ -3388,12 +3553,17 @@ app.post("/api/admin/bookpod/check", requireAdminAuth, async (req, res) => {
     const { bookpod } = await loadPrintModules();
     const stamp = `connection-check-${Date.now()}`;
     const urls = await bookpod.requestUploadUrls(`${stamp}-content.pdf`, `${stamp}-cover.pdf`);
-    console.log("[bookpod] connection check: OK — upload slots granted, nothing created");
+    console.log(`[bookpod] connection check: OK — upload slots granted, nothing created (${urls.contentGsUri})`);
     return res.json({
       ok: true,
       message: "החיבור לבוקפוד תקין — התקבלו כתובות העלאה. לא נוצר ספר ולא נצרכו קרדיטים.",
       gotContentUrl: Boolean(urls.contentUploadUrl),
       gotCoverUrl:   Boolean(urls.coverUploadUrl),
+      // The address a real run would attach to the book record. Shown because a
+      // book that comes out empty looks identical to a book that came out fine
+      // until you can see which object it points at.
+      contentGsUri:  urls.contentGsUri,
+      coverGsUri:    urls.coverGsUri,
     });
   } catch (err) {
     console.error("[bookpod] connection check FAILED:", err.message);

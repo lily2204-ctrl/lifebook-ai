@@ -220,8 +220,13 @@ function signedUrlToGsUri(signedUrl) {
  * creating anything: it only asks for upload slots. Nothing is written to the
  * Bookpod account, no file is transferred, no credits are touched.
  *
+ * It also derives the gs:// URIs here rather than in createBook, so that the
+ * connection check exercises — and can show — the exact same derivation the real
+ * run depends on. If Bookpod ever change their bucket layout, this free call is
+ * where we find out, instead of on a live order.
+ *
  * POST /api/v1/books/upload-url
- * @returns {Promise<{contentUploadUrl: string, coverUploadUrl: string}>}
+ * @returns {Promise<{contentUploadUrl: string, coverUploadUrl: string, contentGsUri: string, coverGsUri: string}>}
  */
 async function requestUploadUrls(contentFileName, coverFileName) {
   const res = await apiRequest('POST', '/api/v1/books/upload-url', {
@@ -234,7 +239,17 @@ async function requestUploadUrls(contentFileName, coverFileName) {
   if (!contentUploadUrl || !coverUploadUrl) {
     throw new Error(`[bookpod] upload-url: response missing upload URLs. Full response: ${JSON.stringify(res)}`);
   }
-  return { contentUploadUrl, coverUploadUrl };
+
+  const contentGsUri = signedUrlToGsUri(contentUploadUrl);
+  const coverGsUri = signedUrlToGsUri(coverUploadUrl);
+  if (!contentGsUri || !coverGsUri) {
+    throw new Error(
+      '[bookpod] upload-url: could not derive gs:// URIs from the signed upload URLs. ' +
+      `Hosts were: ${new URL(contentUploadUrl).hostname} / ${new URL(coverUploadUrl).hostname}`
+    );
+  }
+
+  return { contentUploadUrl, coverUploadUrl, contentGsUri, coverGsUri };
 }
 
 /**
@@ -306,13 +321,17 @@ async function createBook(bookId, contentPdfPath, coverPdfPath, options = {}) {
 
   // ── Step 1: ask for upload slots ──────────────────────────────────────────
   console.log('[bookpod] createBook: step 1/3 — requesting signed upload URLs...');
-  const { contentUploadUrl, coverUploadUrl } = await requestUploadUrls(contentFileName, coverFileName);
+  const {
+    contentUploadUrl, coverUploadUrl,
+    contentGsUri: contentUrl, coverGsUri: coverUrl,
+  } = await requestUploadUrls(contentFileName, coverFileName);
 
-  const contentUrl = signedUrlToGsUri(contentUploadUrl);
-  const coverUrl = signedUrlToGsUri(coverUploadUrl);
-  if (!contentUrl || !coverUrl) {
-    throw new Error('[bookpod] createBook: could not derive gs:// URIs from the signed upload URLs');
-  }
+  // These two strings are the whole link between the files we upload and the book
+  // record. Logged in full because they are otherwise invisible: nothing in the
+  // Bookpod dashboard shows which object a book points at, so if a book ever comes
+  // out empty again, the Railway log is the only place the answer can be found.
+  console.log(`[bookpod] createBook: content -> ${contentUrl}`);
+  console.log(`[bookpod] createBook: cover   -> ${coverUrl}`);
 
   // ── Step 2: transfer the PDFs to Google Cloud Storage ─────────────────────
   console.log('[bookpod] createBook: step 2/3 — uploading both PDFs to storage...');
@@ -348,6 +367,12 @@ async function createBook(bookId, contentPdfPath, coverPdfPath, options = {}) {
   };
 
   const response = await apiRequest('POST', '/api/v1/books', payload);
+
+  // Logged in full, on success as well as failure. Bookpod's API answers 200 for
+  // outcomes that are not successes, and we have no documentation for this
+  // response beyond the id we pick out of it — so the only honest record of what
+  // they actually said is the raw body.
+  console.log(`[bookpod] createBook: step 3/3 response — ${JSON.stringify(response)}`);
 
   const bookpodBookId = response.bookId ?? response.bookid ?? response.id;
   if (!bookpodBookId) {
