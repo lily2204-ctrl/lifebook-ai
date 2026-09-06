@@ -75,7 +75,11 @@ function assertCredentials() {
 // with our matte paper and our look, but the choice is pending Bookpod's own
 // recommendation and the physical proof (owner, 2026-08-30).
 const PRINT_DEFAULTS = {
-  title:            null,          // required by Bookpod — falls back to the bookId
+  // `title` is the ONLY naming field Bookpod's API has, so it is also the only
+  // thing that distinguishes one book from another in their dashboard. The caller
+  // is expected to pass a real one (server.js buildBookpodTitle); the bookId
+  // fallback below is a last resort that produces an unreadable row, not a plan.
+  title:            null,
   author:           'Lifebook',
   language:         'Hebrew',
   printcolor:       'color',
@@ -246,7 +250,7 @@ async function requestUploadUrls(contentFileName, coverFileName) {
  * which was wrong.) `external_id` is gone too — it does not exist anywhere in the
  * current API; traceability now runs through reference_num1 on the order.
  *
- * @param {string} bookId         Internal Lifebook bookId — names the files and titles the book
+ * @param {string} bookId         Internal Lifebook bookId — names the uploaded files
  * @param {string} contentPdfPath Absolute path to the interior PDF (28 pages, 19x28.5cm + bleed)
  * @param {string} coverPdfPath   Absolute path to the flat cover PDF (one sheet, front|spine|back)
  * @param {object} [options]      Overrides for PRINT_DEFAULTS
