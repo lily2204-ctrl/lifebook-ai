@@ -661,6 +661,23 @@ function printShippingToBookpod(shipping) {
   };
 }
 
+// The name the book carries in the Bookpod account. `title` is the only naming
+// field their API has — there is no separate internal/hidden id — so this string
+// is the ONLY way to tell one customer's book from another in their dashboard.
+// Shape: "<story title> · <family name> · <first 8 of our bookId>". The story
+// title already contains the child's first name, so we never repeat it; the
+// family name disambiguates two children called the same thing, and the id
+// prefix ties the row back to a card in the print station. Parts that are
+// missing are dropped rather than left as empty separators.
+function buildBookpodTitle(book, bookId, lastName) {
+  const storyTitle = String(book?.generatedBook?.title || "").trim();
+  const childName  = String(book?.childName || "").trim();
+  const head = storyTitle || (childName ? `הספר של ${childName}` : "Lifebook");
+  return [head, String(lastName || "").trim(), String(bookId).slice(0, 8)]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
@@ -3268,12 +3285,35 @@ app.post("/api/admin/print-orders/:id/approve", requireAdminAuth, async (req, re
 
     const { bookpod } = await loadPrintModules();
 
-    console.log(`[admin] approve print order ${id} (book ${order.bookId}): downloading the approved PDFs...`);
-    const contentPath = await downloadPdfToTemp(order.contentPdfUrl, `${order.bookId}-content.pdf`);
-    const coverPath   = await downloadPdfToTemp(order.coverPdfUrl,   `${order.bookId}-cover.pdf`);
+    // Never create the same book twice. Bookpod has no delete, so a second
+    // createBook would leave a permanent duplicate in the account — and a first
+    // click that reached the book but died on the order (a disabled flag, a
+    // network blip) used to do exactly that. The id below is saved the moment
+    // the book exists, so a repeat click skips creation and goes straight to
+    // the order.
+    let bookpodBookId = order.bookpodBookId;
 
-    console.log(`[admin] approve print order ${id}: creating Bookpod draft...`);
-    const bookpodBookId = await bookpod.createBook(order.bookId, contentPath, coverPath);
+    if (bookpodBookId) {
+      console.log(`[admin] approve print order ${id}: book already exists on Bookpod (${bookpodBookId}) — skipping creation`);
+    } else {
+      console.log(`[admin] approve print order ${id} (book ${order.bookId}): downloading the approved PDFs...`);
+      const contentPath = await downloadPdfToTemp(order.contentPdfUrl, `${order.bookId}-content.pdf`);
+      const coverPath   = await downloadPdfToTemp(order.coverPdfUrl,   `${order.bookId}-cover.pdf`);
+
+      const book = await getBookLight(order.bookId);
+      const bookpodTitle = buildBookpodTitle(book, order.bookId, shipping.lastName);
+
+      console.log(`[admin] approve print order ${id}: creating Bookpod book "${bookpodTitle}"...`);
+      bookpodBookId = String(await bookpod.createBook(order.bookId, contentPath, coverPath, {
+        title:       bookpodTitle,
+        description: `Lifebook order ${order.id} · book ${order.bookId}`,
+      }));
+
+      // Save it BEFORE the order. Creating a book costs nothing; losing track of
+      // one costs a duplicate we can never remove.
+      await updatePrintOrder(order.id, { bookpodBookId });
+      console.log(`[admin] approve print order ${id}: book created and saved — bookpodBookId=${bookpodBookId}`);
+    }
 
     console.log(`[admin] approve print order ${id}: !! placing REAL Bookpod order — consuming credits !!`);
     const bpOrder = await bookpod.createOrder(String(bookpodBookId), shipping, order.bookId);
@@ -3372,7 +3412,15 @@ app.post("/api/books/:bookId/bookpod/create-book", async (req, res) => {
     console.log(`[bookpod] create-book [${bookId}]: generating cover PDF...`);
     const cover = await gen.generateCoverPDF(bookId, {});
     console.log(`[bookpod] create-book [${bookId}]: content=${content.outputPath} cover=${cover.outputPath}`);
-    const bookpodBookId = await bookpod.createBook(bookId, content.outputPath, cover.outputPath);
+    // No print order here, so no family name to disambiguate with — the story
+    // title plus the id prefix is what identifies this one in their dashboard.
+    const book = await getBookLight(bookId);
+    const bookpodTitle = buildBookpodTitle(book, bookId, "");
+    console.log(`[bookpod] create-book [${bookId}]: creating "${bookpodTitle}"...`);
+    const bookpodBookId = await bookpod.createBook(bookId, content.outputPath, cover.outputPath, {
+      title:       bookpodTitle,
+      description: `Lifebook book ${bookId}`,
+    });
     console.log(`[bookpod] create-book [${bookId}]: book created — bookpodBookId=${bookpodBookId} (no credits consumed)`);
   })().catch(err => console.error(`bookpod create-book [${bookId}]: FATAL — ${err.message}`));
 });
